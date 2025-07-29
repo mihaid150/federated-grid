@@ -22,27 +22,27 @@ class FogMessaging:
         self.fog_amqp_host = fog_amqp_host
         self.cloud_amqp_host = cloud_amqp_host
         self.fog_mqtt_host = fog_mqtt_host
-        # Cache of received models keyed by edge ID
+        # Cache of received models keyed by edge
         self.edge_models_cache = {}
 
     def _create_connection(self) -> pika.BlockingConnection:
         """Helper to create a new RabbitMQ connection."""
         return pika.BlockingConnection(pika.ConnectionParameters(host=self.fog_amqp_host))
 
-    def start_command_forwarder(self, edge_ids):
+    def start_mqtt_listener(self):
         """
         Subscribe to cloud commands over MQTT and forward them to edges.
         Large model updates from the cloud will still arrive via AMQP and
         are handled by the RabbitMQ consumer in start_model_from_cloud().
         """
-        def on_mqtt_command(client, userdata, msg):
+        def on_mqtt_command(client, _userdata, msg):
             payload = json.loads(msg.payload.decode())
             command = payload.get('command')
             if command is not None:
                 # forward each command to edges over MQTT
-                for edge_id in edge_ids:
-                    client.publish(f'fog/{edge_id}/command', msg.payload, qos=1)
-                    logger.info(f"Fog (MQTT): forwarded command {command} to edge {edge_id}.")
+                for edge in FederatedNodeState.get_current_node().child_nodes:
+                    client.publish(f'fog/{edge.device_mac}/command', msg.payload, qos=1)
+                    logger.info(f"Fog (MQTT): forwarded command {command} to edge {edge.name}.")
 
         mqtt_client = mqtt.Client()
         mqtt_client.on_message = on_mqtt_command
@@ -50,11 +50,9 @@ class FogMessaging:
         mqtt_client.subscribe('cloud/fog/command', qos=1)
         logger.info("Fog (MQTT): subscribed to cloud/fog/command topic.")
 
-        # Meanwhile, start a separate thread/process to consume model-updates via AMQP:
-        self._start_amqp_model_from_cloud()
         mqtt_client.loop_forever()
 
-    def _start_amqp_model_from_cloud(self):
+    def start_amqp_listener(self):
         """
         Consume the cloud’s aggregated-model broadcast over AMQP fanout and
         update the fog model.  This runs in parallel to the MQTT loop.
@@ -77,13 +75,24 @@ class FogMessaging:
                 with open(FogResourcesPaths.FOG_MODEL_FILE_PATH, 'wb') as f:
                     f.write(model_bytes)
                 logger.info("Fog (AMQP): updated fog model from cloud broadcast.")
+
+                for edge in FederatedNodeState.get_current_node().child_nodes:
+                    queue = f"edge_{edge.device_mac}_messages_queue"
+                    ch.queue_declare(queue=queue, durable=True)
+                    ch.basic_publish(
+                        exchange='',
+                        routing_key=queue,
+                        body=json.dumps(msg).encode('utf-8'),
+                        properties=pika.BasicProperties(delivery_mode=2)
+                    )
+                logger.info("Fog (AMQP): broadcast updated model to edges.")
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
         channel.basic_consume(queue=queue_name, on_message_callback=on_amqp_model, auto_ack=False)
-        # run this consumer in its own thread or process so it doesn’t block the MQTT loop
+        # run this consumer in its own thread or process such that it doesn’t block the MQTT loop
         threading.Thread(target=channel.start_consuming, daemon=True).start()
 
-    def start_model_listener(self):
+    def start_edge_model_listener(self):
         """
         Listen for trained models sent from edges and cache them.
         """

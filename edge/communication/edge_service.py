@@ -9,6 +9,9 @@ from edge.communication.edge_messaging import EdgeMessaging
 
 class EdgeService:
 
+    def __init__(self, messaging: EdgeMessaging):
+        self.edge_messaging = messaging
+
     @staticmethod
     def create_local_edge_model():
         # adapt to provide model reference for creation
@@ -21,16 +24,14 @@ class EdgeService:
         edge_model.save(local_edge_model_path)
         logger.info("Successfully created and saved local edge model.")
 
-    @staticmethod
-    def train_edge_local_model(msg):
+    def train_edge_local_model(self, payload):
         # placeholder date
-        date = msg.get('date')
+        date = payload.get('data', {}).get('date')
         metrics = train_local_edge_model(date)
         # complete with fog host
-        EdgeMessaging.send_trained_model(EdgeResourcesPaths.TRAINED_LOCAL_EDGE_MODEL_FILE_PATH, metrics)
+        self.edge_messaging.send_trained_model(EdgeResourcesPaths.TRAINED_LOCAL_EDGE_MODEL_FILE_PATH, metrics)
 
-    @staticmethod
-    def retrain_fog_model(msg):
+    def retrain_fog_model(self, msg):
         local_edge_model_path = os.path.join(
             EdgeResourcesPaths.MODELS_FOLDER_PATH,
             EdgeResourcesPaths.NON_TRAINED_LOCAL_EDGE_MODEL_FILE_PATH
@@ -40,7 +41,7 @@ class EdgeService:
         with open(local_edge_model_path, "wb") as f:
             f.write(model_bytes)
 
-        date = msg.get('date')
+        date = msg.get('data', {}).get('date')
         metrics = train_local_edge_model(date)
         # complete with fog host
-        EdgeMessaging.send_trained_model(EdgeResourcesPaths.TRAINED_LOCAL_EDGE_MODEL_FILE_PATH, metrics)
+        self.edge_messaging.send_trained_model(EdgeResourcesPaths.TRAINED_LOCAL_EDGE_MODEL_FILE_PATH, metrics)

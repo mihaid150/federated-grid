@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import Dict, Any, Union, List
-from fastapi import HTTPException, WebSocket, WebSocketDisconnect, APIRouter
+from typing import Dict, Any, Union
+from fastapi import WebSocket, WebSocketDisconnect, APIRouter
 from shared.node import FederatedNode, FederatedNodeType, ParentFederatedNode, ChildFederatedNode
 from shared.node_state import FederatedNodeState
 from shared.logging_config import logger

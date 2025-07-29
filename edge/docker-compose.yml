@@ -1,0 +1,18 @@
+version: "2.4"
+services:
+  edge_app:
+    image: edge_node_app:latest
+    container_name: edge_node_app
+    restart: always
+    build:
+      context: .
+      dockerfile: Dockerfile
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    network_mode: "host"
+    mem_limit: 3g
+
+networks:
+  edge_fog_net:
+    driver: bridge

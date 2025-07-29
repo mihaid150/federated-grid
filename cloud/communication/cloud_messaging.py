@@ -1,6 +1,8 @@
 import base64
 import json
 import os
+from typing import Dict
+
 import pika
 import paho.mqtt.client as mqtt
 from shared.logging_config import logger
@@ -36,12 +38,12 @@ class CloudMessaging:
         self._mqtt_publish(topic='cloud/fog/command', message={'command': '0'})
         logger.info("Cloud (MQTT): sent command to fogs instructing edges to create local model.")
 
-    def notify_all_edges_to_start_first_training(self):
+    def notify_all_edges_to_start_first_training(self, data: Dict[str, any]):
         """Use MQTT to instruct all edges (via fogs) to start the first training."""
-        self._mqtt_publish(topic='cloud/fog/command', message={'command': '1'})
+        self._mqtt_publish(topic='cloud/fog/command', message={'command': '1', 'data': data})
         logger.info("Cloud (MQTT): sent command to fogs instructing edges to start the first training.")
 
-    def broadcast_cloud_model(self):
+    def broadcast_cloud_model(self, data: Dict[str, any]):
         """
         Use RabbitMQ to broadcast an aggregated cloud model (binary payload) to fogs.
         This remains AMQP because model files are large.
@@ -54,7 +56,7 @@ class CloudMessaging:
         with open(model_path, "rb") as f:
             model_b64 = base64.b64encode(f.read()).decode('utf-8')
 
-        message = {"command": "2", "model": model_b64}
+        message = {"command": "2", "model": model_b64, "data": data}
         message_body = json.dumps(message).encode('utf-8')
 
         connection = self._create_connection()
@@ -66,7 +68,7 @@ class CloudMessaging:
             body=message_body,
             properties=pika.BasicProperties(delivery_mode=2),
         )
-        logger.info("Cloud (AMQP): broadcast aggregated model to fogs.")
+        logger.info("Cloud (AMQP): broadcast cloud model to fogs.")
         connection.close()
 
     def start_fog_model_listener(self):

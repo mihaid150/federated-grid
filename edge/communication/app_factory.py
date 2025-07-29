@@ -3,12 +3,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from shared.shared_main import shared_router
-from cloud.communication.cloud_main import CloudMain, cloud_router
+from edge.communication.edge_messaging import EdgeMessaging, EdgeService
+
 
 app = FastAPI()
-cloud_main = CloudMain()
 
-cloud_router.websocket('/ws')(cloud_main.websocket_handler)
+edge_messaging = EdgeMessaging()
+edge_service = EdgeService(edge_messaging)
+edge_messaging.edge_service = edge_service
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,12 +21,13 @@ app.add_middleware(
 )
 
 app.include_router(shared_router, prefix="/node")
-app.include_router(cloud_router, prefix="/cloud")
 
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Initializing cloud application...")
+    logger.info("Initializing edge application...")
+    edge_messaging.start_amqp_listener()
+    edge_messaging.start_mqtt_listener()
 
 
 if __name__ == "__main__":
