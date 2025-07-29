@@ -2,10 +2,10 @@ import os
 import pandas as pd
 import numpy as np
 import tensorflow as tf
-from edge.data_preprocessing import preprocess_data
-from edge.data_selection import filter_data_by_interval_date
+from edge.model.data_preprocessing import preprocess_data
+from edge.model.data_selection import filter_data_by_interval_date
 from shared.logging_config import logger
-from edge.edge_resources_paths import EdgeResourcesPaths
+from edge.communication.edge_resources_paths import EdgeResourcesPaths
 from shared.utils import required_columns
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from tensorflow.keras.preprocessing import timeseries_dataset_from_array
