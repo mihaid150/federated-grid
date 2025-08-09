@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import time
 from typing import Dict
 
 import pika
@@ -12,24 +13,51 @@ from cloud.communication.cloud_resources_paths import CloudResourcesPaths
 
 
 class CloudMessaging:
-    def __init__(self, cloud_amqp_host: str = 'CLOUD_RABBITMQ_HOST', cloud_mqtt_host: str = 'CLOUD_MQTT_HOST'):
+    def __init__(
+            self,
+            cloud_amqp_host: str = os.getenv('CLOUD_RABBITMQ_HOST', 'rabbitmq-cloud'),
+            cloud_mqtt_host: str = os.getenv('CLOUD_MQTT_HOST', 'mqtt-cloud'),
+            cloud_mqtt_port: int = int(os.getenv('CLOUD_MQTT_PORT', 1883)),
+    ):
         """
         :param cloud_amqp_host: hostname or IP of the cloud’s RabbitMQ broker.
         :param cloud_mqtt_host: hostname or IP of the cloud's MQTT broker.
+        :param cloud_mqtt_port: port of the cloud's MQTT broker.
         """
         self.cloud_amqp_host = cloud_amqp_host
         self.cloud_mqtt_host = cloud_mqtt_host
+        self.cloud_mqtt_port = cloud_mqtt_port
         # Cache for aggregated models keyed by fog ID
         self.fog_models_cache = {}
 
-    def _create_connection(self) -> pika.BlockingConnection:
-        """Helper to create a new RabbitMQ connection."""
-        return pika.BlockingConnection(pika.ConnectionParameters(host=self.cloud_amqp_host))
+    def _create_connection(self, retries=10, delay=5) -> pika.BlockingConnection:
+        """Helper to create a new RabbitMQ connection with retry logic for cloud node."""
+        for attempt in range(1, retries + 1):
+            try:
+                connection = pika.BlockingConnection(pika.ConnectionParameters(host=self.cloud_amqp_host))
+                return connection
+            except pika.exceptions.AMQPConnectionError as e:
+                logger.warning(f"Cloud AMQP connection failed (attempt {attempt}/{retries}): {e})")
+                if attempt == retries:
+                    logger.error(
+                        f"Could not connect to RabbitMQ broker ({self.cloud_amqp_host}) after {retries} retries.")
+                    raise
+                time.sleep(delay)
+        return None
 
-    def _mqtt_publish(self, topic: str, message: dict, qos: int = 1):
-        """Publish a JSON message over MQTT."""
+    def _mqtt_publish(self, topic: str, message: dict, qos: int = 1, retries=10, delay=5):
         client = mqtt.Client()
-        client.connect(self.cloud_mqtt_host)
+        for attempt in range(1, retries + 1):
+            try:
+                client.connect(self.cloud_mqtt_host, self.cloud_mqtt_port)
+                break
+            except Exception as e:
+                logger.warning(f"Cloud MQTT connection failed (attempt {attempt}/{retries}): {e}")
+                if attempt == retries:
+                    logger.error(
+                        f"Cloud: Could not connect to MQTT broker ({self.cloud_mqtt_host}:{self.cloud_mqtt_port}) after {retries} retries.")
+                    return
+                time.sleep(delay)
         client.publish(topic, json.dumps(message), qos=qos)
         client.disconnect()
 
@@ -48,7 +76,10 @@ class CloudMessaging:
         Use RabbitMQ to broadcast an aggregated cloud model (binary payload) to fogs.
         This remains AMQP because model files are large.
         """
-        model_path = CloudResourcesPaths.CLOUD_MODEL_FILE_PATH
+
+        self.fog_models_cache.clear()
+
+        model_path = CloudResourcesPaths.CLOUD_MODEL_FILE_PATH.value
         if not os.path.exists(model_path):
             logger.error("Cloud: no aggregated model found at %s, cannot broadcast.", model_path)
             return
@@ -75,31 +106,33 @@ class CloudMessaging:
         """
         Listen for aggregated models from fogs and cache them.
         """
-        os.makedirs(CloudResourcesPaths.MODELS_FOLDER_PATH, exist_ok=True)
+        os.makedirs(CloudResourcesPaths.MODELS_FOLDER_PATH.value, exist_ok=True)
         connection = self._create_connection()
         channel = connection.channel()
         channel.queue_declare(queue='fog_to_cloud_models', durable=True)
 
         def on_fog_model(ch, method, _properties, body):
             payload = json.loads(body)
-            fog_id = payload.get('fog_id')
+            fog_device_mac = payload.get('fog_device_mac')
+            fog_name = payload.get('fog_name')
             model_b64 = payload.get('model')
 
-            if not fog_id or not model_b64:
-                logger.warning("Cloud: received malformed message from fog; missing fog_id or model.")
+            if not fog_device_mac or not model_b64:
+                logger.warning("Cloud: received malformed message from fog; missing fog_device_mac or model.")
                 ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
 
             try:
                 model_bytes = base64.b64decode(model_b64)
-                model_path = os.path.join(CloudResourcesPaths.MODELS_FOLDER_PATH, f'{fog_id}_aggregated_model.keras')
+                model_path = os.path.join(CloudResourcesPaths.MODELS_FOLDER_PATH.value, f'{fog_name}_aggregated_model.keras')
                 with open(model_path, 'wb') as f:
                     f.write(model_bytes)
-                self.fog_models_cache[fog_id] = {"model_path": model_path}
-                logger.info(f"Cloud: cached aggregated model from fog {fog_id} at {model_path}.")
+                map_id = fog_device_mac + '_' + fog_name
+                self.fog_models_cache[map_id] = {"model_path": model_path}
+                logger.info(f"Cloud: cached aggregated model from fog {fog_name} at {model_path}.")
 
             except Exception as e:
-                logger.error(f"Cloud: failed to decode or save model from fog {fog_id}: {e}")
+                logger.error(f"Cloud: failed to decode or save model from fog {fog_name}: {e}")
             ch.basic_ack(delivery_tag=method.delivery_tag)
             self.is_ready_to_aggregate()
 
@@ -113,4 +146,5 @@ class CloudMessaging:
         if len(self.fog_models_cache) == len(FederatedNodeState.get_current_node().child_nodes):
             logger.info("Cloud has received all fog models and is ready to aggregate them.")
             aggregate_received_models(self.fog_models_cache)
-            logger.info("Fog has succeeded to aggregate edge models. Sending aggregated fog model to cloud.")
+            self.fog_models_cache.clear()
+            logger.info("Cloud has succeeded to aggregate fog models and obtained cloud model.")

@@ -2,9 +2,9 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-COPY cloud_node/requirements.txt /app/cloud_node/
+COPY requirements.txt /app/
 
-RUN mkdir "/app/models"
+RUN mkdir -p "/app/models"
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -13,13 +13,13 @@ RUN apt-get update && apt-get install -y \
     dnsutils \
     iproute2 \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir -r /app/cloud_node/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY cloud_node /app/cloud_node
+COPY cloud /app/cloud
 COPY shared /app/shared
 
-ENV PYTHONPATH=/app:/app/cloud_node:/app/shared
+ENV PYTHONPATH=/app:/app/cloud:/app/shared
 
 EXPOSE 8081
 
-CMD ["uvicorn", "cloud_node.app_factory:app", "--host", "0.0.0.0", "--port", "8081"]
+CMD ["uvicorn", "cloud.communication.app_factory:app", "--host", "0.0.0.0", "--port", "8081"]

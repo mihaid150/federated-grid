@@ -5,7 +5,13 @@ from shared.logging_config import logger
 
 
 class MonitoringThread(threading.Thread):
-    def __init__(self, target: Callable[..., Any], sleep_time: float = 1, *args, **kwargs):
+    def __init__(
+            self,
+            target: Callable[..., Any],
+            sleep_time: float = 1,
+            *args: Any,
+            **kwargs: Any
+    ):
         super().__init__()
         self._stop_event = threading.Event()
         self.target = target

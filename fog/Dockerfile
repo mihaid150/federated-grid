@@ -2,9 +2,9 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-RUN mkdir "/app/models"
+RUN mkdir -p "/app/models"
 
-COPY fog_node/requirements.txt /app/fog_node/
+COPY requirements.txt /app/
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -13,13 +13,14 @@ RUN apt-get update && apt-get install -y \
     dnsutils \
     iproute2  \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir -r /app/fog_node/requirements.txt
 
-COPY fog_node /app/fog_node
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY fog /app/fog
 COPY shared /app/shared
 
-ENV PYTHONPATH=/app:/app/fog_node:/app/shared
+ENV PYTHONPATH=/app:/app/fog:/app/shared
 
 EXPOSE 8081
 
-CMD ["uvicorn", "fog_node.app_factory:app", "--host", "0.0.0.0", "--port", "8081"]
+CMD ["uvicorn", "fog.communication.app_factory:app", "--host", "0.0.0.0", "--port", "8081"]

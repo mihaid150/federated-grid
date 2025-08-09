@@ -1,4 +1,5 @@
 from typing import Dict, Any
+import threading
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from shared.commands import Command
 from shared.logging_config import logger
@@ -34,7 +35,7 @@ class BroadcastCloudModel(Command):
 class CloudMain:
     def __init__(self):
         self.cloud_messaging = CloudMessaging()
-        self.cloud_messaging.start_fog_model_listener()
+        threading.Thread(target=self.cloud_messaging.start_fog_model_listener, daemon=True).start()
 
         self.command_map = {
             0: NotifyModelCreation(self),

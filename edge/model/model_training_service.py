@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+
 import pandas as pd
 import numpy as np
 import tensorflow as tf
@@ -66,115 +68,132 @@ def data_generator(file_path, feature_columns, target_column, sequence_length):
             yield batch
 
 
-def train_local_edge_model(training_date: str, sequence_length: int = 144):
+def train_local_edge_model(training_date: str, sequence_length: int = 144, batch_size: int = 32):
+    # --- date handling: parse safely & normalize to ISO ---
+    start_dt = pd.to_datetime(training_date, dayfirst=True, errors="coerce")
+    if pd.isna(start_dt):
+        raise ValueError(f"Could not parse training_date={training_date!r}")
+    training_day1 = start_dt.strftime("%Y-%m-%d")
+    training_day2 = (start_dt + pd.Timedelta(days=2)).strftime("%Y-%m-%d")
+    evaluation_day1 = (start_dt + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+    evaluation_day2 = (start_dt + pd.Timedelta(days=5)).strftime("%Y-%m-%d")
 
-    # define training and evaluation intervals
-    training_day1 = training_date
-    training_day2 = (pd.to_datetime(training_date) + pd.Timedelta(days=2)).strftime("%Y-%m-%d")
-    evaluation_day1 = (pd.to_datetime(training_date) + pd.Timedelta(days=3)).strftime("%Y-%m-%d")
-    evaluation_day2 = (pd.to_datetime(training_date) + pd.Timedelta(days=5)).strftime("%Y-%m-%d")
     logger.info(
-        f"Training local edge non_trained_local_edge_model with training day1 {training_day1}, training day2 {training_day2}, "
-        f"evaluation day1 {evaluation_day1} and evaluation day2 {evaluation_day2}.")
+        f"Training local edge non_trained_local_edge_model with training day1 {training_day1}, "
+        f"training day2 {training_day2}, evaluation day1 {evaluation_day1} and "
+        f"evaluation day2 {evaluation_day2}."
+    )
 
-    training_data_path = EdgeResourcesPaths.TRAINING_DAYS_DATA_PATH
-    evaluation_data_path = EdgeResourcesPaths.EVALUATION_DAYS_DATA_PATH
+    training_data_path = EdgeResourcesPaths.TRAINING_DAYS_DATA_PATH.value
+    evaluation_data_path = EdgeResourcesPaths.EVALUATION_DAYS_DATA_PATH.value
 
-    # filter and preprocess training data
-    filter_data_by_interval_date(EdgeResourcesPaths.INPUT_DATA_PATH, "datetime", training_day1,
-                                 training_day2, training_data_path)
+    # --- filter & preprocess ---
+    filter_data_by_interval_date(EdgeResourcesPaths.INPUT_DATA_PATH.value, "datetime",
+                                 training_day1, training_day2, training_data_path)
     preprocess_data(training_data_path, "datetime", "apparent power (kWh)")
     post_preprocessing_padding(training_data_path, sequence_length)
-    train_data = pd.read_csv(training_data_path)
-    logger.info(f"Training data shape for 2 days is {train_data.shape}")
+    train_df = pd.read_csv(training_data_path)
+    logger.info(f"Training data shape for 2 days is {train_df.shape}")
 
-    # filter and preprocess evaluation data
-    filter_data_by_interval_date(EdgeResourcesPaths.INPUT_DATA_PATH, "datatime", evaluation_day1,
-                                 evaluation_day2, evaluation_data_path)
+    filter_data_by_interval_date(EdgeResourcesPaths.INPUT_DATA_PATH.value, "datetime",
+                                 evaluation_day1, evaluation_day2, evaluation_data_path)
     preprocess_data(evaluation_data_path, "datetime", "apparent power (kWh)")
     post_preprocessing_padding(evaluation_data_path, sequence_length)
-    evaluation_data = pd.read_csv(evaluation_data_path)
-    logger.info(f"Evaluation data shape for 2 days is {evaluation_data.shape}")
+    eval_df = pd.read_csv(evaluation_data_path)
+    logger.info(f"Evaluation data shape for 2 days is {eval_df.shape}")
 
-    # define feature columns
+    # --- features ---
     feature_columns = required_columns.copy()
     feature_columns.remove("value")
 
-    # build streaming datasets from the generator
+    # --- streaming datasets ---
     try:
         autotune = tf.data.experimental.AUTOTUNE
     except AttributeError:
-        # fallback: prefetch a small fixed number of batches
         autotune = 1
 
-    train_dataset = tf.data.Dataset.from_generator(
-        lambda: data_generator(training_data_path, feature_columns, 'value', sequence_length),
-        output_types=(tf.float32, tf.float32),
-        output_shapes=(
-            tf.TensorShape([None, sequence_length, len(feature_columns)]),
-            tf.TensorShape([None])
+    def make_ds(csv_path):
+        return tf.data.Dataset.from_generator(
+            lambda: data_generator(csv_path, feature_columns, 'value', sequence_length),
+            output_types=(tf.float32, tf.float32),
+            output_shapes=(
+                tf.TensorShape([None, sequence_length, len(feature_columns)]),
+                tf.TensorShape([None])
+            ),
         )
-    ).prefetch(autotune)
 
-    evaluation_dataset = tf.data.Dataset.from_generator(
-        lambda: data_generator(evaluation_data_path, feature_columns, 'value', sequence_length),
-        output_types=(tf.float32, tf.float32),
-        output_shapes=(
-            tf.TensorShape([None, sequence_length, len(feature_columns)]),
-            tf.TensorShape([None])
-        )
-    ).prefetch(autotune)
+    train_dataset = make_ds(training_data_path).prefetch(autotune)
+    evaluation_dataset = make_ds(evaluation_data_path).prefetch(autotune)
 
-    # load and evaluate the pre-trained model before fine-tuning
+    # --- compute steps_per_epoch deterministically ---
+    def num_steps(df_len):
+        sequences = max(0, df_len - sequence_length + 1)
+        return max(1, int(np.ceil(sequences / batch_size)))
+
+    train_steps = num_steps(len(train_df))
+    eval_steps = num_steps(len(eval_df))
+
+    # repeat train dataset to prevent "ran out of data"
+    train_dataset = train_dataset.repeat()
+    evaluation_dataset_eval = evaluation_dataset.take(eval_steps)
+
+    # --- load model ---
     custom_objects = {
         "LogCosh": tf.keras.losses.LogCosh(),
         "mse": tf.keras.losses.MeanSquaredError(),
         "Huber": tf.keras.losses.Huber()
     }
+    non_trained_local_edge_model = tf.keras.models.load_model(
+        EdgeResourcesPaths.NON_TRAINED_LOCAL_EDGE_MODEL_FILE_PATH.value,
+        custom_objects=custom_objects
+    )
 
-    non_trained_local_edge_model = tf.keras.models.load_model(EdgeResourcesPaths.NON_TRAINED_LOCAL_EDGE_MODEL_FILE_PATH,
-                                                              custom_objects=custom_objects)
-
-    # compute baseline metrics
+    # --- baseline metrics ---
     y_true_before, y_pred_before = [], []
-    for X_batch, y_batch in evaluation_dataset:
-        predictions = non_trained_local_edge_model.predict(X_batch)
+    for X_batch, y_batch in evaluation_dataset_eval:
+        preds = non_trained_local_edge_model.predict(X_batch, verbose=0)
         y_true_before.append(y_batch.numpy())
-        y_pred_before.append(predictions)
+        y_pred_before.append(preds)
     y_true_before = np.concatenate(y_true_before)
     y_pred_before = np.concatenate(y_pred_before)
     evaluation_before = compute_metrics(y_true_before, y_pred_before)
     logger.info(f"Metrics before retraining: {evaluation_before}")
 
-    # compile and train the model using the streaming dataset
+    # --- train with validation ---
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
     non_trained_local_edge_model.compile(optimizer=optimizer, loss=tf.keras.losses.Huber())
-    early_stopping = tf.keras.callbacks.EarlyStopping(
-        monitor='loss', patience=5, restore_best_weights=True
-    )
-    logger.info("Retraining the non_trained_local_edge_model on streaming dataset...")
-    non_trained_local_edge_model.fit(train_dataset, epochs=10, callbacks=[early_stopping], verbose=1)
+    early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
 
-    # evaluate the model after fine‑tuning
+    logger.info("Retraining the non_trained_local_edge_model on streaming dataset...")
+    non_trained_local_edge_model.fit(
+        train_dataset,
+        epochs=10,
+        steps_per_epoch=train_steps,
+        validation_data=evaluation_dataset_eval,
+        validation_steps=eval_steps,
+        callbacks=[early_stopping],
+        verbose=1
+    )
+
+    # --- post-train metrics ---
     y_true_after, y_pred_after = [], []
-    for X_batch, y_batch in evaluation_dataset:
-        predictions = non_trained_local_edge_model.predict(X_batch)
+    for X_batch, y_batch in evaluation_dataset_eval:
+        preds = non_trained_local_edge_model.predict(X_batch, verbose=0)
         y_true_after.append(y_batch.numpy())
-        y_pred_after.append(predictions)
+        y_pred_after.append(preds)
     y_true_after = np.concatenate(y_true_after)
     y_pred_after = np.concatenate(y_pred_after)
     evaluation_after = compute_metrics(y_true_after, y_pred_after)
     logger.info(f"Metrics after retraining: {evaluation_after}")
 
-    # save the fine‑tuned model
-    trained_edge_model_file_path = os.path.join(
-        EdgeResourcesPaths.MODELS_FOLDER_PATH,
-        EdgeResourcesPaths.TRAINED_LOCAL_EDGE_MODEL_FILE_PATH,
-    )
-    non_trained_local_edge_model.save(trained_edge_model_file_path)
+    # --- save trained model ---
+    Path(EdgeResourcesPaths.MODELS_FOLDER_PATH.value).mkdir(parents=True, exist_ok=True)
+    trained_edge_model_file_path = EdgeResourcesPaths.TRAINED_LOCAL_EDGE_MODEL_FILE_PATH.value
+    non_trained_local_edge_model.save(trained_edge_model_file_path, include_optimizer=False)
     logger.info(f"Trained non_trained_local_edge_model saved at: {trained_edge_model_file_path}")
 
     return {
         "before_training": evaluation_before,
         "after_training": evaluation_after,
     }
+

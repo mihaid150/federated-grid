@@ -3,6 +3,7 @@ import tensorflow as tf
 import numpy as np
 from cloud.communication.cloud_resources_paths import CloudResourcesPaths
 from shared.logging_config import logger
+from shared.utils import delete_files_containing
 
 
 def aggregate_received_models(fog_models_cache: dict):
@@ -20,13 +21,13 @@ def aggregate_received_models(fog_models_cache: dict):
     cloud_model = None
 
     # Include existing cloud model if present
-    if os.path.exists(CloudResourcesPaths.CLOUD_MODEL_FILE_PATH):
-        cloud_model = tf.keras.models.load_model(CloudResourcesPaths.CLOUD_MODEL_FILE_PATH)
+    if os.path.exists(CloudResourcesPaths.CLOUD_MODEL_FILE_PATH.value):
+        cloud_model = tf.keras.models.load_model(CloudResourcesPaths.CLOUD_MODEL_FILE_PATH.value)
         aggregated_weights = [w.astype(np.float64) for w in cloud_model.get_weights()]
         model_count = 1
 
     # Include each fog model
-    for fog_id, entry in fog_models_cache.items():
+    for map_id, entry in fog_models_cache.items():
         model_path = entry["model_path"]
         model = tf.keras.models.load_model(model_path)
         weights = model.get_weights()
@@ -54,9 +55,10 @@ def aggregate_received_models(fog_models_cache: dict):
     cloud_model.set_weights(aggregated_weights)
 
     # Ensure the destination directory exists
-    os.makedirs(os.path.dirname(CloudResourcesPaths.CLOUD_MODEL_FILE_PATH), exist_ok=True)
-    cloud_model.save(CloudResourcesPaths.CLOUD_MODEL_FILE_PATH)
-    logger.info("Cloud: aggregated model saved to %s", CloudResourcesPaths.CLOUD_MODEL_FILE_PATH)
+    os.makedirs(os.path.dirname(CloudResourcesPaths.CLOUD_MODEL_FILE_PATH.value), exist_ok=True)
+    cloud_model.save(CloudResourcesPaths.CLOUD_MODEL_FILE_PATH.value)
+    logger.info("Cloud: aggregated model saved to %s", CloudResourcesPaths.CLOUD_MODEL_FILE_PATH.value)
 
-    # Optionally clear fog model cache for next round
-    fog_models_cache.clear()
+    delete_files_containing(CloudResourcesPaths.MODELS_FOLDER_PATH.value, "fog", [".keras"])
+
+    return None
