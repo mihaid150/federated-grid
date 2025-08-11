@@ -7,6 +7,7 @@ RUN mkdir -p "/app/data"
 RUN mkdir =p "/app/data/filtered_data"
 
 COPY requirements.txt /app/
+COPY *federated_topology* /app/
 
 RUN apt-get update && apt-get install -y \
     build-essential \

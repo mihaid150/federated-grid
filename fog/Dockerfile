@@ -5,6 +5,7 @@ WORKDIR /app
 RUN mkdir -p "/app/models"
 
 COPY requirements.txt /app/
+COPY *federated_topology* /app/
 
 RUN apt-get update && apt-get install -y \
     build-essential \

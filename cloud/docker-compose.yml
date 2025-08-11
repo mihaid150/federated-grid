@@ -24,6 +24,7 @@ services:
     command: uvicorn cloud.communication.app_factory:app --host 0.0.0.0 --port 8081
     volumes:
       - ./models:/app/models
+      - /sys/class/net:/host_sys/class/net:ro
 
   rabbitmq:
     image: rabbitmq:3-management

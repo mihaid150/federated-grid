@@ -1,8 +1,8 @@
 from __future__ import annotations
-
+import os
 from typing import Dict, Any, Union
 from fastapi import WebSocket, WebSocketDisconnect, APIRouter
-from shared.node import FederatedNode, FederatedNodeType, ParentFederatedNode, ChildFederatedNode
+from shared.node import FederatedNode, FederatedNodeType, ParentFederatedNode, ChildFederatedNode, parse_topology_for_port
 from shared.node_state import FederatedNodeState
 from shared.logging_config import logger
 from shared.commands import Command
@@ -34,6 +34,8 @@ class SetChildrenNodes(Command):
     def execute(self, data: Dict[str, any]) -> Dict[str, Any]:
         return set_children_nodes(data)
 
+# class AutoInitialization(Command):
+#     def execute(self, data: Dict[str, any]) -> Dict[str, Any]:
 
 command_map = {
     0: InitializeNodeCommand(),
@@ -41,6 +43,7 @@ command_map = {
     2: SetParentNode(),
     3: SetChildNode(),
     4: SetChildrenNodes(),
+   # 5: AutoInitialization(),
 }
 
 
@@ -179,3 +182,12 @@ def set_children_nodes(data) -> dict[str, str | list[dict[str, str | FederatedNo
         "message": f"Added {len(added_children)} child nodes to the current working node.",
         "children": added_children,
     }
+
+def auto_initialization():
+    current_running_port = os.getenv("APP_HOST_PORT", "unknown")
+    if current_running_port == "unknown":
+        pass
+    else:
+        node_info = parse_topology_for_port("/app", "federated_topology", int(current_running_port))
+        current_node_info = node_info["current_node"]
+        current_node = FederatedNode(current_node_info["name"], current_node_info["federated_node_type"], current_node_info["ip_address"],)

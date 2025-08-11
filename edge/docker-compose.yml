@@ -24,6 +24,7 @@ services:
     mem_limit: 3g
     volumes:
       - ./models:/app/models
+      - /sys/class/net:/host_sys/class/net:ro
 
 networks:
   aqtf_shared_network:
