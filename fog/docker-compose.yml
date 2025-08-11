@@ -17,6 +17,7 @@ services:
       - CLOUD_RABBITMQ_HOST=${CLOUD_RABBITMQ_HOST}
       - FOG_MQTT_HOST=${FOG_MQTT_HOST}
       - FOG_MQTT_PORT=${FOG_MQTT_PORT}
+      - HOST_IFACE=enp3s0
     ports:
       - "${APP_HOST_PORT}:8081"
     dns:
@@ -27,7 +28,7 @@ services:
     command: uvicorn fog.communication.app_factory:app --host 0.0.0.0 --port 8081
     volumes:
       - ./models:/app/models
-      - /sys/class/net:/host_sys/class/net:ro
+      - /sys:/host_sys:ro
 
   rabbitmq:
     image: rabbitmq:3-management

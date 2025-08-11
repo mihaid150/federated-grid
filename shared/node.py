@@ -111,72 +111,91 @@ class ChildFederatedNode(FederatedNode):
         super().__init__(name, federated_node_type, ip_address, port, device_mac)
 
 class MacFetcher:
-    HOST_SYS_PATH = "/host_sys/class/net"
+    HOST_SYS = "/host_sys"
+    CLASS_NET = os.path.join(HOST_SYS, "class", "net")
+    _MAC_RE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$", re.I)
 
     @classmethod
     def get_mac_address(cls) -> str:
-        # First try inside the container (default behavior)
-        interface = cls.__get_default_interface()
-        if interface:
-            mac = cls.__read_mac_from_interface(interface)
+        logger.debug("Starting MAC address retrieval...")
+        # 1) Prefer explicit host interface
+        host_iface = os.getenv("HOST_IFACE")
+        if host_iface:
+            logger.debug(f"HOST_IFACE is set to '{host_iface}', trying it first...")
+            mac = cls._read_host_mac_by_name(host_iface)
             if mac:
-                # If MAC is in container namespace, check if it's a veth (Docker)
-                if cls.__is_docker_mac(mac):
-                    # Try to fetch from host
-                    host_mac = cls.__read_host_mac(interface)
-                    if host_mac:
-                        return host_mac
+                logger.debug(f"MAC found from HOST_IFACE '{host_iface}': {mac}")
                 return mac
+            else:
+                logger.debug(f"No MAC found for HOST_IFACE '{host_iface}'")
 
-        # If default interface not found, try known interfaces
-        for iface in ["eth0", "enp2s0", "ens33", "wlan0"]:
-            mac = cls.__read_mac_from_interface(iface)
+        # 2) Auto-pick a "real" interface from the host
+        candidates = cls._candidate_ifaces()
+        logger.debug(f"Candidate interfaces after filtering: {candidates}")
+        for iface in candidates:
+            logger.debug(f"Trying candidate interface '{iface}'...")
+            mac = cls._read_host_mac_by_name(iface)
             if mac:
-                if cls.__is_docker_mac(mac):
-                    host_mac = cls.__read_host_mac(iface)
-                    if host_mac:
-                        return host_mac
+                logger.debug(f"MAC found from candidate '{iface}': {mac}")
                 return mac
+            else:
+                logger.debug(f"No valid MAC found for candidate '{iface}'")
 
+        logger.warning("No valid MAC found, returning all-zero MAC.")
         return "00:00:00:00:00:00"
 
-    @staticmethod
-    def __get_default_interface() -> Optional[str]:
+    @classmethod
+    def _candidate_ifaces(cls):
         try:
-            result = subprocess.check_output(["ip", "route", "show", "default"]).decode("utf-8")
-            match = re.search(r"dev (\S+)", result)
-            if match:
-                return match.group(1)
+            names = [n for n in os.listdir(cls.CLASS_NET)]
+            logger.debug(f"Interfaces in {cls.CLASS_NET}: {names}")
         except Exception as e:
-            print(f"Error retrieving default interface: {e}")
-        return None
+            logger.error(f"Failed to list interfaces in {cls.CLASS_NET}: {e}")
+            return []
 
-    @staticmethod
-    def __read_mac_from_interface(interface: str) -> Optional[str]:
+        skip_prefixes = (
+            "lo", "veth", "br-", "docker", "ifb", "virbr", "vlan", "bond", "macvtap", "tap", "tun"
+        )
+        names = [n for n in names if not any(n.startswith(p) for p in skip_prefixes)]
+        logger.debug(f"Interfaces after skip filter: {names}")
+
+        def rank(name: str) -> int:
+            if name.startswith(("enp", "eth", "eno", "ens")): return 0
+            if name.startswith(("wlan", "wlp", "enx")):      return 1
+            return 2
+
+        sorted_names = sorted(names, key=lambda n: (rank(n), n))
+        logger.debug(f"Interfaces after sorting: {sorted_names}")
+        return sorted_names
+
+    @classmethod
+    def _read_host_mac_by_name(cls, iface: str) -> str | None:
+        base = os.path.join(cls.CLASS_NET, iface)
+        addr_path = os.path.join(base, "address")
+
         try:
-            result = subprocess.check_output(["ip", "link", "show", interface]).decode("utf-8")
-            mac_match = re.search(r"link/ether ([0-9a-f:]{17})", result)
-            if mac_match:
-                return mac_match.group(1)
-        except subprocess.CalledProcessError:
-            pass
+            if os.path.islink(base):
+                link = os.readlink(base)
+                logger.debug(f"Interface '{iface}' is a symlink to '{link}'")
+                real_dir = os.path.normpath(os.path.join(cls.CLASS_NET, link))
+                addr_path = os.path.join(real_dir, "address")
+
+            logger.debug(f"Reading MAC from {addr_path}")
+            with open(addr_path, "r") as f:
+                mac = f.read().strip().lower()
+                logger.debug(f"Read MAC '{mac}' from {iface}")
+                if cls._is_valid_mac(mac):
+                    return mac
+                else:
+                    logger.debug(f"MAC '{mac}' is invalid for {iface}")
+        except Exception as e:
+            logger.debug(f"Failed to read MAC for interface '{iface}': {e}")
         return None
 
-    def __read_host_mac(self, interface: str) -> Optional[str]:
-        """Reads the MAC from the host via bind-mounted /sys/class/net."""
-        if os.path.exists(self.HOST_SYS_PATH):
-            host_iface_path = os.path.join(self.HOST_SYS_PATH, interface, "address")
-            if os.path.exists(host_iface_path):
-                try:
-                    with open(host_iface_path, "r") as f:
-                        mac = f.read().strip()
-                        if re.match(r"^[0-9a-f:]{17}$", mac):
-                            return mac
-                except Exception:
-                    pass
-        return None
-
-    @staticmethod
-    def __is_docker_mac(mac: str) -> bool:
-        """Rough check: Docker MACs often start with 02:42 or are in locally administered range."""
-        return mac.lower().startswith("02:42") or (int(mac.split(":")[0], 16) & 2) != 0
+    @classmethod
+    def _is_valid_mac(cls, mac: str) -> bool:
+        if not mac or not cls._MAC_RE.fullmatch(mac):
+            return False
+        if mac == "00:00:00:00:00:00":
+            return False
+        return True

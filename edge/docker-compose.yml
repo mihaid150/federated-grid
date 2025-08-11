@@ -13,6 +13,7 @@ services:
       - FOG_MQTT_PORT=${FOG_MQTT_PORT}
       - TF_CPP_MIN_LOG_LEVEL=2
       - TF_ENABLE_ONEDNN_OPTS=0
+      - HOST_IFACE=enp3s0
     ports:
       - "${APP_HOST_PORT}:8081"
     dns:
@@ -24,7 +25,7 @@ services:
     mem_limit: 3g
     volumes:
       - ./models:/app/models
-      - /sys/class/net:/host_sys/class/net:ro
+      - /sys:/host_sys:ro
 
 networks:
   aqtf_shared_network:
