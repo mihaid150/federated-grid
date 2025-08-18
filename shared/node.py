@@ -50,6 +50,7 @@ def node_info(node: Dict[str, Any]) -> Dict[str, Any]:
         "ip_address": d.get("ip_address"),
         "port": d.get("port"),
         "node_type": d.get("node_type"),
+        "device_mac": d.get("device_mac"),
     }
 
 def parse_topology_for_port(folder: str, name_substring: str, current_port: int) -> Dict[str, Any]:

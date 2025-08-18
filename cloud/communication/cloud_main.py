@@ -35,7 +35,6 @@ class BroadcastCloudModel(Command):
 class CloudMain:
     def __init__(self):
         self.cloud_messaging = CloudMessaging()
-        threading.Thread(target=self.cloud_messaging.start_fog_model_listener, daemon=True).start()
 
         self.command_map = {
             0: NotifyModelCreation(self),

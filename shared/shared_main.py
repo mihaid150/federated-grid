@@ -34,8 +34,9 @@ class SetChildrenNodes(Command):
     def execute(self, data: Dict[str, any]) -> Dict[str, Any]:
         return set_children_nodes(data)
 
-# class AutoInitialization(Command):
-#     def execute(self, data: Dict[str, any]) -> Dict[str, Any]:
+class AutoInitialization(Command):
+    def execute(self, data: Dict[str, any]) -> Dict[str, Any]:
+        return auto_initialization()
 
 command_map = {
     0: InitializeNodeCommand(),
@@ -43,7 +44,7 @@ command_map = {
     2: SetParentNode(),
     3: SetChildNode(),
     4: SetChildrenNodes(),
-   # 5: AutoInitialization(),
+    5: AutoInitialization(),
 }
 
 
@@ -183,11 +184,89 @@ def set_children_nodes(data) -> dict[str, str | list[dict[str, str | FederatedNo
         "children": added_children,
     }
 
+def _coerce_node_type(x):
+    # Accept int or Enum or str; normalize to FederatedNodeType
+    if isinstance(x, FederatedNodeType):
+        return x
+    if isinstance(x, int):
+        # Your topology appears to be 1-based: cloud=1, fog=2, edge=3
+        if x in (1, 2, 3):
+            x = x - 1
+        return FederatedNodeType(x)  # will raise if out of range
+    if isinstance(x, str):
+        # allow "cloud" / "fog" / "edge" or enum names
+        s = x.strip().upper()
+        alias = {"CLOUD": 0, "FOG": 1, "EDGE": 2,
+                 "CLOUD_NODE": 0, "FOG_NODE": 1, "EDGE_NODE": 2}
+        return FederatedNodeType(alias[s])
+    raise ValueError(f"Unsupported node_type: {x!r}")
+
 def auto_initialization():
-    current_running_port = os.getenv("APP_HOST_PORT", "unknown")
-    if current_running_port == "unknown":
-        pass
-    else:
-        node_info = parse_topology_for_port("/app", "federated_topology", int(current_running_port))
-        current_node_info = node_info["current_node"]
-        current_node = FederatedNode(current_node_info["name"], current_node_info["federated_node_type"], current_node_info["ip_address"],)
+    port_str = os.getenv("APP_HOST_PORT")
+    logger.info(f"Current running port: {port_str}")
+    if not port_str:
+        return {"error": "APP_HOST_PORT not set in container environment."}
+
+    try:
+        current_port = int(port_str)
+    except ValueError:
+        return {"error": f"APP_HOST_PORT='{port_str}' is not a valid integer."}
+
+    info = parse_topology_for_port("/app", "federated_topology", current_port)
+    logger.info(f"Node info: {info}")
+
+    # Current node
+    cur = info["current_node"]
+    name = cur.get("label") or cur.get("name")
+    ip = cur.get("ip_address")
+    port = cur.get("port")
+    mac = cur.get("device_mac")
+    node_type = _coerce_node_type(cur.get("node_type"))
+
+    current_node = FederatedNode(name, node_type, ip, port, mac)
+
+    # Parent (optional)
+    parent = info.get("parent")
+    if parent:
+        p = ParentFederatedNode(
+            parent.get("label") or parent.get("name"),
+            _coerce_node_type(parent.get("node_type")),
+            parent.get("ip_address"),
+            parent.get("port"),
+            parent.get("device_mac"),
+        )
+        current_node.set_parent_node(p)
+
+    # Children
+    children_objs = []
+    for ch in info.get("children", []):
+        c = ChildFederatedNode(
+            ch.get("label") or ch.get("name"),
+            _coerce_node_type(ch.get("node_type")),
+            ch.get("ip_address"),
+            ch.get("port"),
+            ch.get("device_mac"),
+        )
+        children_objs.append(c)
+    current_node.add_child_nodes(children_objs)
+
+    FederatedNodeState.initialize_node(current_node)
+    logger.info(
+        "auto_initialization: initialized node=%s type=%s port=%s parent=%s children=%d",
+        name, node_type, port, (parent.get("label") if parent else None), len(children_objs)
+    )
+
+    # Return JSON-serializable data (no Enums!)
+    return {
+        "message": "Auto-initialized node, parent, and children from topology.",
+        "node": {
+            "name": name,
+            "node_type": node_type.value,   # or node_type.name
+            "ip": ip,
+            "port": port,
+            "device_mac": mac
+        }
+    }
+
+
+

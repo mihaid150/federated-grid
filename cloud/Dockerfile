@@ -6,6 +6,7 @@ COPY requirements.txt /app/
 COPY *federated_topology* /app/
 
 RUN mkdir -p "/app/models"
+RUN mkdir -p "/app/status"
 
 RUN apt-get update && apt-get install -y \
     build-essential \

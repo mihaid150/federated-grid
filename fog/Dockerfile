@@ -3,6 +3,7 @@ FROM python:3.10-slim
 WORKDIR /app
 
 RUN mkdir -p "/app/models"
+RUN mkdir -p "/app/models/outbox"
 
 COPY requirements.txt /app/
 COPY *federated_topology* /app/

@@ -28,7 +28,7 @@ required_columns = [
 
 def delete_files_containing(
         directory: str,
-        substring: str,
+        substring: str | None,
         extensions: Optional[Iterable[str]] = None,
         recursive: bool = False
 ) -> List[str]:
@@ -46,7 +46,7 @@ def delete_files_containing(
 
     for root, dirs, files in walker:
         for filename in files:
-            if substring in filename and (extensions is None or any(filename.endswith(ext) for ext in extensions)):
+            if (substring is None or substring in filename) and (extensions is None or any(filename.endswith(ext) for ext in extensions)):
                 filepath = os.path.join(root, filename)
                 try:
                     os.remove(filepath)

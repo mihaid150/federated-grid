@@ -3,6 +3,9 @@ import json
 import os
 import threading
 import time
+import random
+import socket
+
 import pika
 import paho.mqtt.client as mqtt
 
@@ -26,6 +29,7 @@ class EdgeMessaging:
         self.fog_mqtt_host = fog_mqtt_host
         self.fog_mqtt_port = fog_mqtt_port
         self.edge_service = edge_service
+        self._last_cmd_id = None
 
     def _create_connection(self, retries=10, delay=5) -> pika.BlockingConnection:
         """Helper to create a new RabbitMQ connection with retry logic for fog node."""
@@ -43,61 +47,125 @@ class EdgeMessaging:
         return None
 
     def start_amqp_listener(self):
-        connection = self._create_connection()
-        channel = connection.channel()
-        channel.basic_qos(prefetch_count=1)  # be nice to the broker
-
         queue_name = f'edge_{FederatedNodeState.get_current_node().name}_messages_queue'
-        channel.queue_declare(queue=queue_name, durable=True)
 
-        def on_amqp_command(ch, method, _props, body):
-            try:
-                msg = json.loads(body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else body)
-            except Exception as e:
-                logger.exception(f"Edge: failed to parse AMQP message: {e}")
-                ch.basic_ack(delivery_tag=method.delivery_tag)
-                return
+        def run():
+            delay = 5
+            max_delay = 60
+            announced_down = False
 
-            cmd = msg.get('command')
-            # accept "2" or 2
-            if str(cmd) == '2':
-                logger.info(
-                    f"Edge {FederatedNodeState.get_current_node().name}: received AMQP retrain/broadcast model command.")
+            while True:
+                conn = None
                 try:
-                    self.edge_service.retrain_fog_model(msg)
-                    logger.info(f"Edge {FederatedNodeState.get_current_node().name}: retrained local model.")
-                except Exception as e:
-                    logger.exception(f"Edge: retrain_fog_model failed: {e}")
-            else:
-                logger.debug(f"Edge: AMQP message ignored (command={cmd!r}).")
+                    params = pika.ConnectionParameters(
+                        host=self.fog_amqp_host,
+                        heartbeat=30,
+                        blocked_connection_timeout=60,
+                        client_properties={
+                            "connection_name": f"edge:{FederatedNodeState.get_current_node().name}:cmd-consumer"},
+                    )
+                    conn = pika.BlockingConnection(params)
+                    ch = conn.channel()
+                    ch.basic_qos(prefetch_count=1)
+                    ch.queue_declare(queue=queue_name, durable=True, auto_delete=False)
 
-            ch.basic_ack(delivery_tag=method.delivery_tag)
+                    def on_amqp_command(ch, method, _props, body):
+                        try:
+                            msg = json.loads(body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else body)
+                            cmd = str(msg.get('command'))
+                            if cmd == '2':
+                                logger.info("Edge %s: received AMQP command 2 (retrain/broadcast).",
+                                            FederatedNodeState.get_current_node().name)
+                                try:
+                                    self.edge_service.retrain_fog_model(msg)
+                                    logger.info("Edge %s: retrained local model.",
+                                                FederatedNodeState.get_current_node().name)
+                                except Exception:
+                                    logger.exception("Edge: retrain_fog_model failed")
+                            else:
+                                logger.debug("Edge: AMQP message ignored (command=%r).", cmd)
+                        except Exception:
+                            logger.exception("Edge: failed to parse/handle AMQP message")
+                        finally:
+                            ch.basic_ack(delivery_tag=method.delivery_tag)
 
-        channel.basic_consume(queue=queue_name, on_message_callback=on_amqp_command, auto_ack=False)
-        threading.Thread(target=channel.start_consuming, daemon=True).start()
+                    ch.basic_consume(queue=queue_name, on_message_callback=on_amqp_command, auto_ack=False)
+                    logger.info("Edge %s: consuming AMQP commands on %s",
+                                FederatedNodeState.get_current_node().name, queue_name)
+
+                    if announced_down:
+                        logger.info("Edge: AMQP reconnected.")
+                        announced_down = False
+                    delay = 5  # reset
+                    ch.start_consuming()
+
+                except (socket.gaierror, pika.exceptions.AMQPError) as e:
+                    if not announced_down:
+                        logger.warning("Edge: AMQP unavailable (%s). Backing off up to %ss...",
+                                       e.__class__.__name__, max_delay)
+                        announced_down = True
+                    logger.debug("Edge: retrying AMQP connect in %ss...", delay)
+                    time.sleep(delay + random.uniform(0, 1.0))
+                    delay = min(delay * 2, max_delay)
+
+                except Exception:
+                    logger.exception("Edge: unexpected AMQP listener error; retrying in %ss", delay)
+                    time.sleep(delay)
+                    delay = min(delay * 2, max_delay)
+
+                finally:
+                    try:
+                        if conn and conn.is_open:
+                            conn.close()
+                    except Exception:
+                        pass
+
+        threading.Thread(target=run, daemon=True).start()
 
     def start_mqtt_listener(self, retries=10, delay=5) -> None:
-        """Listen for commands from the fog and dispatch them to the EdgeService."""
-        # MQTT retry logic + port usage
-        mqtt_client = mqtt.Client()
+        edge_name = FederatedNodeState.get_current_node().name
+        topic = f'fog/{edge_name}/command'
+
+        mqtt_client = mqtt.Client(client_id=f"edge-{edge_name}", clean_session=False)
+        mqtt_client.reconnect_delay_set(min_delay=1, max_delay=30)
+
+        def on_connect(client, userdata, flags, rc):
+            # flags may have 'session present' (paho v1) or 'session_present' (v2)
+            sess = flags.get('session present', flags.get('session_present', 0))
+            logger.info(f"Edge {edge_name}: MQTT connected rc={rc}, session_present={sess}")
+            # Always (re)subscribe on connect so we recover after broker restarts
+            client.subscribe(topic, qos=1)
+            logger.info(f"Edge {edge_name}: (re)subscribed to {topic}")
+
+        def on_disconnect(client, userdata, rc):
+            logger.warning(f"Edge {edge_name}: MQTT disconnected rc={rc}, will auto-reconnect...")
 
         def on_mqtt_command(_client, _userdata, msg):
             try:
                 payload = json.loads(msg.payload.decode())
-                command = payload.get('command')
-                if command == '0':
-                    logger.info(
-                        f"Edge {FederatedNodeState.get_current_node().name}: received command to create a local model.")
+
+                cmd_id = payload.get("cmd_id")
+                if cmd_id is not None and cmd_id == self._last_cmd_id:
+                    logger.info(f"Edge: duplicate cmd_id {cmd_id} from fog ignored.")
+                    return
+                self._last_cmd_id = cmd_id
+
+                cmd = str(payload.get('command'))
+                logger.info(f"Edge {edge_name}: received MQTT command: {cmd}")
+                if cmd == '0':
                     EdgeService.create_local_edge_model()
-                elif command == '1':
-                    logger.info(
-                        f"Edge {FederatedNodeState.get_current_node().name}: received command to train local model.")
+                elif cmd == '1':
                     self.edge_service.train_edge_local_model(payload)
+                else:
+                    logger.debug(f"Edge {edge_name}: ignoring MQTT command={cmd!r}")
             except Exception as e:
                 logger.exception(f"Edge: error while handling MQTT command: {e}")
 
+        mqtt_client.on_connect = on_connect
+        mqtt_client.on_disconnect = on_disconnect
         mqtt_client.on_message = on_mqtt_command
 
+        # Initial connect (sub happens in on_connect)
         for attempt in range(1, retries + 1):
             try:
                 mqtt_client.connect(self.fog_mqtt_host, self.fog_mqtt_port)
@@ -105,12 +173,11 @@ class EdgeMessaging:
             except Exception as e:
                 logger.warning(f"MQTT connection failed (attempt {attempt}/{retries}): {e}")
                 if attempt == retries:
-                    logger.error(f"Could not connect to MQTT broker ({self.fog_mqtt_host}:{self.fog_mqtt_port}) after {retries} retries.")
+                    logger.error(
+                        f"Could not connect to MQTT broker ({self.fog_mqtt_host}:{self.fog_mqtt_port}) after {retries} retries.")
                     raise
                 time.sleep(delay)
 
-        mqtt_client.subscribe(f'fog/{FederatedNodeState.get_current_node().name}/command', qos=1)
-        logger.info(f"Edge {FederatedNodeState.get_current_node().name}: subscribed to MQTT commands on fog/{FederatedNodeState.get_current_node().name}/command.")
         mqtt_client.loop_forever()
 
     def send_trained_model(self, model_path: str, metrics: dict) -> None:
