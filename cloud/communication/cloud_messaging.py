@@ -9,6 +9,8 @@ import socket
 import random
 import pika
 import paho.mqtt.client as mqtt
+
+from shared.base_agent import Agent
 from shared.logging_config import logger
 from shared.node_state import FederatedNodeState
 from cloud.model.model_aggregation_service import aggregate_received_models
@@ -42,9 +44,10 @@ class CloudMessaging:
             logger.warning("Cloud: failed to ensure status folder: %s", e)
 
         self._restore_round_id()
+        self.agent: Agent = None
 
     # ---------------------------
-    # NEW: status helpers
+    # status helpers
     # ---------------------------
 
     def _persist_round_id(self, round_id: int):
@@ -170,6 +173,11 @@ class CloudMessaging:
         self._persist_round_id(round_id)  # <-- NEW
         cmd = {'command': '1', 'cmd_id': int(time.time() * 1000), 'round_id': round_id, 'data': data}
         self._mqtt_publish('cloud/fog/command', cmd, qos=1, retain=False)
+        if self.agent:
+            try:
+                self.agent.on_round_started(round_id, data)
+            except Exception as e:
+                logger.warning(f"Cloud agent failed to work on round {round_id} with data {data} due to error: {e}")
 
     # ---------------------------
     # Model broadcast (AMQP)
@@ -205,6 +213,12 @@ class CloudMessaging:
         finally:
             try:
                 connection.close()
+
+                if self.agent:
+                    try:
+                        self.agent.on_cloud_model_broadcast(round_id, data)
+                    except Exception as e:
+                        logger.warning(f"CloudAgent hook error: {e}")
             except Exception:
                 pass
 
@@ -318,6 +332,13 @@ class CloudMessaging:
                 self.fog_models_cache[map_id] = {"model_path": model_path}
                 self._recent_fog_models[key] = {"hash": model_hash, "ts": now}
                 logger.info("Cloud: cached aggregated model from fog %s at %s.", fog_name, model_path)
+
+                if self.agent:
+                    try:
+                        self.agent.on_fog_model_received(fog_name=fog_name, round_id=round_id, path=model_path)
+                    except Exception as e:
+                        logger.warning(f"CloudAgent hook error on fog model receiving:{e}")
+
             except Exception as e:
                 logger.error("Cloud: failed to decode/save model from fog %s: %s", fog_name, e)
 
@@ -370,3 +391,10 @@ class CloudMessaging:
 
         mqtt_client.connect(self.cloud_mqtt_host, self.cloud_mqtt_port)
         mqtt_client.loop_forever()
+
+    # -----------------------------
+    # Agents helpers
+    # -----------------------------
+
+    def attach_agent(self, agent: Agent):
+        self.agent = agent

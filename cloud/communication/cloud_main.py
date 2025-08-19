@@ -1,5 +1,4 @@
 from typing import Dict, Any
-import threading
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from shared.commands import Command
 from shared.logging_config import logger

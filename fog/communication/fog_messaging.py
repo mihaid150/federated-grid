@@ -10,6 +10,8 @@ import socket
 import pika
 import paho.mqtt.client as mqtt
 from pika import exceptions as px
+
+from shared.base_agent import Agent
 from shared.logging_config import logger
 from shared.node_state import FederatedNodeState
 from fog.communication.fog_resources_paths import FogResourcesPaths
@@ -53,6 +55,7 @@ class FogMessaging:
         _purge_outbox_all()
         logger.info("Fog: purged outbox on boot (no active round).")
         self.OUTBOX_TTL_SECS = int(os.getenv('FOG_OUTBOX_TTL_SECS', '86400'))  # 24h default
+        self.agent: Agent = None
 
         if os.getenv("FOG_PURGE_OUTBOX_ON_BOOT", "false").lower() == "true" and self.current_round is None:
             delete_files_containing(FogResourcesPaths.OUTBOX_FOLDER_PATH.value, None, [".json", ".keras"])
@@ -198,6 +201,12 @@ class FogMessaging:
                     _schedule_clear(topic)
                 except Exception as e:
                     logger.warning("Fog: failed to publish command to %s: %s", topic, e)
+
+            if self.agent:
+                try:
+                    self.agent.on_command(msg.topic, json.loads(msg.payload.decode()))
+                except Exception as e:
+                    logger.warning(f"FogAgent hook error: {e}")
 
         cloud_client.on_connect = on_cloud_connect
         cloud_client.on_disconnect = on_cloud_disconnect
@@ -357,6 +366,12 @@ class FogMessaging:
                             ch.basic_ack(delivery_tag=method.delivery_tag)
                             return
 
+                        if self.agent:
+                            try:
+                                self.agent.on_command(msg.topic, json.loads(msg.payload.decode()))
+                            except Exception as e:
+                                logger.warning(f"FogAgent hook error: {e}")
+
                         # Enable uplink when a real round/broadcast arrives
                         if msg.get("command") == "2" or "model" in msg:
                             if not self._outbox_enabled:
@@ -499,6 +514,13 @@ class FogMessaging:
                             map_id = edge_mac + '_' + edge_name
                             self.edge_models_cache[map_id] = {"model_path": model_path, "metrics": metrics}
                             logger.info(f"Fog: cached model for edge {edge_name} with metrics {metrics}")
+
+                            if self.agent:
+                                try:
+                                    self.agent.on_edge_model_received(edge_key=map_id, metrics=metrics, path=model_path)
+                                except Exception as e:
+                                    logger.warning(f"FogAgent hook error: {e}")
+
                         except Exception as e:
                             logger.exception("Fog: failed handling edge model: %s", e)
                         finally:
@@ -827,6 +849,10 @@ class FogMessaging:
                         pass
 
         threading.Thread(target=run, daemon=True).start()
+
+    # ------------ Agents helpers ---------------
+    def attach_agent(self, agent: Agent):
+        self.agent = agent
 
 
 

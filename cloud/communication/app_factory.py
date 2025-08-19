@@ -9,11 +9,16 @@ from shared.monitoring_thread import MonitoringThread
 from shared.node_state import FederatedNodeState
 from shared.shared_main import shared_router
 from cloud.communication.cloud_main import CloudMain, cloud_router
+from cloud.agents.cloud_agent import CloudAgent
 
 app = FastAPI()
 cloud_main = CloudMain()
 
 cloud_router.websocket('/ws')(cloud_main.websocket_handler)
+
+cloud_agent = CloudAgent()
+cloud_agent.attach_messaging(cloud_main.cloud_messaging)
+cloud_main.cloud_messaging.attach_agent(cloud_agent)
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,6 +45,7 @@ async def startup_event():
             logger.info("FederatedNodeState initialized! Stating AMQP/MQTT listeners...")
             threading.Thread(target=cloud_messaging_arg.start_mqtt_listener, daemon=True).start()
             threading.Thread(target=cloud_messaging_arg.start_amqp_listener, daemon=True).start()
+            cloud_agent.start()
             already_started['done'] = True
             monitoring_thread.stop()
 

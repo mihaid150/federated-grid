@@ -9,6 +9,7 @@ import socket
 import pika
 import paho.mqtt.client as mqtt
 
+from shared.base_agent import Agent
 from shared.logging_config import logger
 from edge.communication.edge_service import EdgeService
 from shared.node_state import FederatedNodeState
@@ -30,6 +31,7 @@ class EdgeMessaging:
         self.fog_mqtt_port = fog_mqtt_port
         self.edge_service = edge_service
         self._last_cmd_id = None
+        self.agent: Agent = None
 
     def _create_connection(self, retries=10, delay=5) -> pika.BlockingConnection:
         """Helper to create a new RabbitMQ connection with retry logic for fog node."""
@@ -144,6 +146,12 @@ class EdgeMessaging:
             try:
                 payload = json.loads(msg.payload.decode())
 
+                if self.agent:
+                    try:
+                        self.agent.on_command(msg.topic, json.loads(msg.payload.decode()))
+                    except Exception as e:
+                        logger.warning(f"EdgeAgent hook error: {e}")
+
                 cmd_id = payload.get("cmd_id")
                 if cmd_id is not None and cmd_id == self._last_cmd_id:
                     logger.info(f"Edge: duplicate cmd_id {cmd_id} from fog ignored.")
@@ -207,3 +215,7 @@ class EdgeMessaging:
         )
         connection.close()
         logger.info(f"Edge {FederatedNodeState.get_current_node().name}: sent trained model and metrics to fog.")
+
+    # ------- Agents helpers
+    def attach_agent(self, agent: Agent):
+        self.agent = agent

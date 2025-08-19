@@ -1,5 +1,4 @@
 import base64
-import os.path
 from pathlib import Path
 from typing import TYPE_CHECKING
 from shared.logging_config import logger
@@ -35,6 +34,15 @@ class EdgeService:
         # complete with fog host
         local_edge_model_path = EdgeResourcesPaths.TRAINED_LOCAL_EDGE_MODEL_FILE_PATH.value
         self.edge_messaging.send_trained_model(local_edge_model_path, metrics)
+        if getattr(self.edge_messaging, 'agent', None):
+            try:
+                self.edge_messaging.agent.on_edge_model_received(
+                    edge_key="self",
+                    metrics=metrics.get("after_training", metrics),
+                    path=local_edge_model_path
+                )
+            except Exception as e:
+                logger.warning(f"EdgeAgent on train_edge_local_model hook error: {e}")
 
     def retrain_fog_model(self, msg):
         local_edge_model_path = EdgeResourcesPaths.NON_TRAINED_LOCAL_EDGE_MODEL_FILE_PATH.value
@@ -48,3 +56,13 @@ class EdgeService:
         # complete with fog host
         trained_edge_model_file_path = EdgeResourcesPaths.TRAINED_LOCAL_EDGE_MODEL_FILE_PATH.value
         self.edge_messaging.send_trained_model(trained_edge_model_file_path, metrics)
+
+        if getattr(self.edge_messaging, 'agent', None):
+            try:
+                self.edge_messaging.agent.on_edge_model_received(
+                    edge_key="self",
+                    metrics=metrics.get("after_training", metrics),
+                    path=trained_edge_model_file_path
+                )
+            except Exception as e:
+                logger.warning(f"EdgeAgent on retrain_fog_model hook error: {e}")
