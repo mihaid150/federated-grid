@@ -10,7 +10,6 @@ import random
 import pika
 import paho.mqtt.client as mqtt
 
-from shared.base_agent import Agent
 from shared.logging_config import logger
 from shared.node_state import FederatedNodeState
 from cloud.model.model_aggregation_service import aggregate_received_models
@@ -44,7 +43,10 @@ class CloudMessaging:
             logger.warning("Cloud: failed to ensure status folder: %s", e)
 
         self._restore_round_id()
-        self.agent: Agent = None
+
+        # cloud-agent specific
+        self._global_throttle_rate = None
+        self._selected_fog = None
 
     # ---------------------------
     # status helpers
@@ -173,11 +175,10 @@ class CloudMessaging:
         self._persist_round_id(round_id)  # <-- NEW
         cmd = {'command': '1', 'cmd_id': int(time.time() * 1000), 'round_id': round_id, 'data': data}
         self._mqtt_publish('cloud/fog/command', cmd, qos=1, retain=False)
-        if self.agent:
-            try:
-                self.agent.on_round_started(round_id, data)
-            except Exception as e:
-                logger.warning(f"Cloud agent failed to work on round {round_id} with data {data} due to error: {e}")
+
+        # emit event for the external cloud-agent service
+        self._mqtt_publish('cloud/events/round-started',
+                           {"round_id": round_id, 'data': data, "ts": int(time.time())}, qos=1, retain=False)
 
     # ---------------------------
     # Model broadcast (AMQP)
@@ -213,14 +214,15 @@ class CloudMessaging:
         finally:
             try:
                 connection.close()
-
-                if self.agent:
-                    try:
-                        self.agent.on_cloud_model_broadcast(round_id, data)
-                    except Exception as e:
-                        logger.warning(f"CloudAgent hook error: {e}")
             except Exception:
                 pass
+
+        # emit event for external cloud-agent service
+        try:
+            self._mqtt_publish('cloud/events/cloud-model-broadcast',
+                               {"round_id": round_id, "ts": int(time.time())}, qos=1, retain=False)
+        except Exception as e:
+            logger.warning(f"Cloud: failed to publish cloud-model-broadcast message to cloud-agent: {e}")
 
     # ---------------------------
     # Ingest aggregated fog models (AMQP)
@@ -333,11 +335,13 @@ class CloudMessaging:
                 self._recent_fog_models[key] = {"hash": model_hash, "ts": now}
                 logger.info("Cloud: cached aggregated model from fog %s at %s.", fog_name, model_path)
 
-                if self.agent:
-                    try:
-                        self.agent.on_fog_model_received(fog_name=fog_name, round_id=round_id, path=model_path)
-                    except Exception as e:
-                        logger.warning(f"CloudAgent hook error on fog model receiving:{e}")
+                # emit event for external cloud-agent service
+                try:
+                    self._mqtt_publish('cloud/events/fog-model-received',
+                                       {"round_id": round_id, "fog_name": fog_name, "hash": model_hash,
+                                        "ts": int(time.time())}, qos=1, retain=False)
+                except Exception as e:
+                    logger.warning(f"Cloud: failed to publish fog-model received for {fog_name}: {e}")
 
             except Exception as e:
                 logger.error("Cloud: failed to decode/save model from fog %s: %s", fog_name, e)
@@ -379,10 +383,40 @@ class CloudMessaging:
             if rc == 0:
                 logger.info("Cloud MQTT: connected successfully.")
                 client.subscribe("fog/cloud/updates")
+
+                # listen for commands coming from external cloud-agent service
+                client.subscribe("cloud/agent/commands", qos=1)
             else:
                 logger.error("Cloud MQTT: failed to connect, code %s", rc)
 
         def on_message(client, userdata, msg):
+            payload = msg.payload.decode("utf-8")
+            topic = msg.topic
+            if topic == "cloud/agent/commands":
+                try:
+                    data = json.loads(payload)
+                except Exception:
+                    logger.warning(f"Cloud: bad command for payload {payload}")
+                    return
+
+                cmd = str(data.get("cmd", "")).upper()
+
+                if cmd == "GLOBAL_THROTTLE":
+                    rate = float(data.get("rate", 0))
+                    self._global_throttle_rate = rate
+                    logger.info(f"Cloud: GLOBAL_THROTTLE rate set to {rate}")
+
+                    # propagate to fogs the status for THROTTLE
+                    # TODO: update fogs to understand this command
+                    self._mqtt_publish("cloud/fog/command",
+                                       {"command": "GLOBAL_THROTTLE", "rate": rate, "ts": int(time.time())}, qos=1, retain=False)
+                elif cmd == "SELECT_FOG":
+                    self._selected_fog = data.get("target")
+                    logger.info(f"Cloud: SELECT_FOG target set to {self._selected_fog}")
+                else:
+                    logger.info(f"Cloud: unknown command {cmd}")
+                return
+            # default logging for other topics
             logger.info("Cloud MQTT: received on %s: %s", msg.topic, msg.payload.decode())
 
         mqtt_client = mqtt.Client()
@@ -391,10 +425,3 @@ class CloudMessaging:
 
         mqtt_client.connect(self.cloud_mqtt_host, self.cloud_mqtt_port)
         mqtt_client.loop_forever()
-
-    # -----------------------------
-    # Agents helpers
-    # -----------------------------
-
-    def attach_agent(self, agent: Agent):
-        self.agent = agent

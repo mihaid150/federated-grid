@@ -14,6 +14,7 @@ class EdgeService:
     def __init__(self, messaging: 'EdgeMessaging'):
         self.edge_messaging = messaging
 
+    # ---------- called by fog commands (MQTT cmd 0) ----------
     @staticmethod
     def create_local_edge_model():
         edge_model = create_model('simple_lstm_two_gates')
@@ -27,6 +28,7 @@ class EdgeService:
         edge_model.save(local_edge_model_path)
         logger.info("Successfully created and saved local edge model.")
 
+    # ---------- called by fog commands (MQTT cmd 1) ----------
     def train_edge_local_model(self, payload):
         # placeholder date
         date = payload.get('data', {}).get('date')
@@ -34,16 +36,8 @@ class EdgeService:
         # complete with fog host
         local_edge_model_path = EdgeResourcesPaths.TRAINED_LOCAL_EDGE_MODEL_FILE_PATH.value
         self.edge_messaging.send_trained_model(local_edge_model_path, metrics)
-        if getattr(self.edge_messaging, 'agent', None):
-            try:
-                self.edge_messaging.agent.on_edge_model_received(
-                    edge_key="self",
-                    metrics=metrics.get("after_training", metrics),
-                    path=local_edge_model_path
-                )
-            except Exception as e:
-                logger.warning(f"EdgeAgent on train_edge_local_model hook error: {e}")
 
+    # ---------- called by fog AMQP cmd 2 (broadcast with model) ----------
     def retrain_fog_model(self, msg):
         local_edge_model_path = EdgeResourcesPaths.NON_TRAINED_LOCAL_EDGE_MODEL_FILE_PATH.value
 
@@ -57,12 +51,24 @@ class EdgeService:
         trained_edge_model_file_path = EdgeResourcesPaths.TRAINED_LOCAL_EDGE_MODEL_FILE_PATH.value
         self.edge_messaging.send_trained_model(trained_edge_model_file_path, metrics)
 
-        if getattr(self.edge_messaging, 'agent', None):
-            try:
-                self.edge_messaging.agent.on_edge_model_received(
-                    edge_key="self",
-                    metrics=metrics.get("after_training", metrics),
-                    path=trained_edge_model_file_path
-                )
-            except Exception as e:
-                logger.warning(f"EdgeAgent on retrain_fog_model hook error: {e}")
+    # ---------- called by agent nudges over MQTT (agent/<edge>/commands) ----------
+    def handle_agent_nudge(self, nudge: dict):
+        """
+        Expected schema (from federated-agents/common/contracts.NudgeCommand):
+          {
+            "command": "REQUEST_RETRAIN",
+            "reason": "drift",
+            "mae": <float>,
+            "params": { ... }
+          }
+        """
+        cmd = (nudge or {}).get("command", "").upper()
+        params = (nudge or {}).get("params", {}) or {}
+
+        if cmd == "REQUEST_RETRAIN":
+            logger.info("[edge-service] agent requested retrain (reason=%s, mae=%s, params=%s)",
+                        nudge.get("reason"), nudge.get("mae"), params)
+            # You can pass params into your training logic as needed (e.g., window_days)
+            self.train_edge_local_model({"data": params})
+        else:
+            logger.info("[edge-service] ignoring agent command: %r", cmd)

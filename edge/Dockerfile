@@ -4,7 +4,7 @@ WORKDIR /app
 
 RUN mkdir -p "/app/models"
 RUN mkdir -p "/app/data"
-RUN mkdir =p "/app/data/filtered_data"
+RUN mkdir -p "/app/data/filtered_data"
 
 COPY requirements.txt /app/
 COPY *federated_topology* /app/
@@ -21,10 +21,10 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY edge /app/edge
 COPY shared /app/shared
 
-COPY /data/input_data.csv /app/data/
+COPY data/input_data.csv /app/data/
 
 ENV PYTHONPATH=/app:/app/edge:/app/shared
 
 EXPOSE 8081
 
-CMD ["uvicorn", "edge.communication..app_factory:app", "--host", "0.0.0.0", "--port", "8081"]
+CMD ["uvicorn", "edge.communication.app_factory:app", "--host", "0.0.0.0", "--port", "8081"]

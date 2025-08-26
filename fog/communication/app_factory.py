@@ -8,14 +8,9 @@ from shared.monitoring_thread import MonitoringThread
 from shared.node_state import FederatedNodeState
 from shared.shared_main import shared_router
 from fog.communication.fog_messaging import FogMessaging
-from fog.agents.fog_agent import FogAgent
 app = FastAPI()
 
 fog_messaging = FogMessaging()
-
-fog_agent = FogAgent()
-fog_agent.attach_messaging(fog_messaging)
-fog_messaging.attach_agent(fog_agent)
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,7 +38,6 @@ async def startup_event():
             threading.Thread(target=fog_messaging_arg.start_amqp_listener, daemon=True).start()
             threading.Thread(target=fog_messaging_arg.start_edge_model_listener, daemon=True).start()
             threading.Thread(target=fog_messaging_arg.start_cloud_uplink_worker, daemon=True).start()
-            fog_agent.start()
             already_started['done'] = True
             monitoring_thread.stop()
 

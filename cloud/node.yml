@@ -5,9 +5,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    depends_on:
-      - rabbitmq
-      - mqtt
     environment:
       - RABBITMQ_HOST=${RABBITMQ_CONTAINER_NAME}
       - CLOUD_RABBITMQ_HOST=${CLOUD_RABBITMQ_HOST}
@@ -25,8 +22,15 @@ services:
     volumes:
       - ./models:/app/models
       - ./status:/app/status
-      - /sys/class/net:/host_sys/class/net:ro
+      - /sys:/host_sys:ro
+    # use only with remote nodes
+#    extra_hosts:
+#      - "cloud:192.168.2.220"
+#      - "rabbitmq-cloud:192.168.2.220"
+#      - "mqtt-cloud:192.168.2.220"
+
 
 networks:
-  aqtf_shared_network:
-    external: true
+  aqtf_shared_network: { } # {} used for remote nodes
+  # use only when all nodes on same host
+  # external: true

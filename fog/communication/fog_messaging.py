@@ -11,7 +11,6 @@ import pika
 import paho.mqtt.client as mqtt
 from pika import exceptions as px
 
-from shared.base_agent import Agent
 from shared.logging_config import logger
 from shared.node_state import FederatedNodeState
 from fog.communication.fog_resources_paths import FogResourcesPaths
@@ -55,7 +54,12 @@ class FogMessaging:
         _purge_outbox_all()
         logger.info("Fog: purged outbox on boot (no active round).")
         self.OUTBOX_TTL_SECS = int(os.getenv('FOG_OUTBOX_TTL_SECS', '86400'))  # 24h default
-        self.agent: Agent = None
+
+        # ---- topics to integrate with fog-agent service ----
+        self.topic_edge_model_received = os.getenv("TOPIC_EDGE_MODEL_RECEIVED", "fog/events/edge-model-received")
+        self.topic_aggregation_complete = os.getenv("TOPIC_AGGREGATION_COMPLETE", "fog/events/aggregation-complete")
+        self.topic_cloud_model_downlink = os.getenv("TOPIC_CLOUD_MODEL_DOWNLINK", "fog/events/cloud-model-downlink")
+        self.topic_agent_commands = os.getenv("TOPIC_AGENT_COMMANDS", "fog/agent/commands")
 
         if os.getenv("FOG_PURGE_OUTBOX_ON_BOOT", "false").lower() == "true" and self.current_round is None:
             delete_files_containing(FogResourcesPaths.OUTBOX_FOLDER_PATH.value, None, [".json", ".keras"])
@@ -202,12 +206,6 @@ class FogMessaging:
                 except Exception as e:
                     logger.warning("Fog: failed to publish command to %s: %s", topic, e)
 
-            if self.agent:
-                try:
-                    self.agent.on_command(msg.topic, json.loads(msg.payload.decode()))
-                except Exception as e:
-                    logger.warning(f"FogAgent hook error: {e}")
-
         cloud_client.on_connect = on_cloud_connect
         cloud_client.on_disconnect = on_cloud_disconnect
         cloud_client.on_message = on_cloud_message
@@ -218,6 +216,11 @@ class FogMessaging:
         def on_fog_connect(client, _userdata, _flags, rc):
             if rc == 0:
                 _mark_online(client, f"fog/{fog_name}/local_status")
+                try:
+                    client.subscribe(self.topic_agent_commands, qos=1)
+                    logger.info("Fog: subscribed to %s on LOCAL broker.", self.topic_agent_commands)
+                except Exception as e:
+                    logger.warning("Fog: subscribe failed on LOCAL broker: %s", e)
             else:
                 logger.error("Fog (local client): connect failed, rc=%s", rc)
 
@@ -225,8 +228,65 @@ class FogMessaging:
             if rc != 0:
                 logger.warning("Fog: disconnected from LOCAL MQTT (rc=%s). Will auto-reconnect.", rc)
 
+        def on_fog_local_message(_client, _userdata, msg):
+            # Commands issued by fog-agent service
+            try:
+                payload = json.loads(msg.payload.decode())
+            except Exception as e:
+                logger.warning("Fog: bad MQTT payload on %s: %s", msg.topic, e)
+                return
+
+            cmd = payload.get("cmd")
+            if not cmd:
+                return
+
+            edges = getattr(FederatedNodeState.get_current_node(), "child_nodes", []) or []
+
+            # Basic command mapping — adjust as your contract evolves
+            if cmd == "THROTTLE":
+                # Relay same payload to all edges
+                for edge in edges:
+                    topic = f"fog/{edge.name}/command"
+                    try:
+                        fog_client.publish(topic, json.dumps(payload), qos=1, retain=False)
+                        logger.info("Fog (agent→edge): relayed THROTTLE to %s", topic)
+                    except Exception as e:
+                        logger.warning("Fog: failed to relay THROTTLE to %s: %s", topic, e)
+
+            elif cmd == "RETRAIN_FOG":
+                # Ask edges to retrain locally (re-using the same per-edge command topic)
+                retrain = {
+                    "command": "REQUEST_RETRAIN",
+                    "reason": payload.get("reason", "policy"),
+                    "params": payload.get("params", {"window_days": 2}),
+                    "ts": int(time.time())
+                }
+                for edge in edges:
+                    topic = f"fog/{edge.name}/command"
+                    try:
+                        fog_client.publish(topic, json.dumps(retrain), qos=1, retain=False)
+                        logger.info("Fog (agent→edge): relayed RETRAIN to %s", topic)
+                    except Exception as e:
+                        logger.warning("Fog: failed to relay RETRAIN to %s: %s", topic, e)
+
+            elif cmd == "SUGGEST_MODEL":
+                # Targeted hint to one edge
+                target = payload.get("target")
+                if target:
+                    topic = f"fog/{target}/command"
+                    try:
+                        fog_client.publish(topic, json.dumps(payload), qos=1, retain=False)
+                        logger.info("Fog (agent→edge): relayed SUGGEST_MODEL to %s", topic)
+                    except Exception as e:
+                        logger.warning("Fog: failed to relay SUGGEST_MODEL to %s: %s", topic, e)
+                else:
+                    logger.info("Fog: SUGGEST_MODEL received without 'target'; ignoring.")
+            else:
+                logger.info("Fog: unknown agent command '%s' ignored.", cmd)
+
         fog_client.on_connect = on_fog_connect
         fog_client.on_disconnect = on_fog_disconnect
+        fog_client.on_message = on_fog_local_message
 
         # -------------------------
         # Per-edge retained clear
@@ -366,12 +426,6 @@ class FogMessaging:
                             ch.basic_ack(delivery_tag=method.delivery_tag)
                             return
 
-                        if self.agent:
-                            try:
-                                self.agent.on_command(msg.topic, json.loads(msg.payload.decode()))
-                            except Exception as e:
-                                logger.warning(f"FogAgent hook error: {e}")
-
                         # Enable uplink when a real round/broadcast arrives
                         if msg.get("command") == "2" or "model" in msg:
                             if not self._outbox_enabled:
@@ -387,6 +441,16 @@ class FogMessaging:
                                     f.flush();
                                     os.fsync(f.fileno())
                                 logger.info("Fog (AMQP): updated fog model from cloud broadcast.")
+
+                                # Notify fog-agent about downlink
+                                self._publish_fog_event(
+                                    self.topic_cloud_model_downlink,
+                                    {
+                                        "round_id": msg.get("round_id"),
+                                        "ts": int(time.time())
+                                    }
+                                )
+
                             except Exception as e:
                                 logger.exception("Fog: failed writing fog model: %s", e)
 
@@ -515,11 +579,16 @@ class FogMessaging:
                             self.edge_models_cache[map_id] = {"model_path": model_path, "metrics": metrics}
                             logger.info(f"Fog: cached model for edge {edge_name} with metrics {metrics}")
 
-                            if self.agent:
-                                try:
-                                    self.agent.on_edge_model_received(edge_key=map_id, metrics=metrics, path=model_path)
-                                except Exception as e:
-                                    logger.warning(f"FogAgent hook error: {e}")
+                            self._publish_fog_event(
+                                self.topic_edge_model_received,
+                                {
+                                    "round_id": self.current_round,
+                                    "edge_name": edge_name,
+                                    "model_path": model_path,
+                                    "metrics": metrics,
+                                    "ts": int(time.time())
+                                }
+                            )
 
                         except Exception as e:
                             logger.exception("Fog: failed handling edge model: %s", e)
@@ -580,6 +649,17 @@ class FogMessaging:
                 logger.error("Fog: aggregation produced no model (skipping send to cloud).")
                 return
             logger.info("Fog has succeeded to aggregate edge models. Sending aggregated fog model to cloud.")
+
+            # Notify fog-agent
+            self._publish_fog_event(
+                self.topic_aggregation_complete,
+                {
+                    "round_id": self.current_round,
+                    "model_path": FogResourcesPaths.FOG_MODEL_FILE_PATH.value,
+                    "ts": int(time.time())
+                }
+            )
+
             self.send_aggregated_model_to_cloud()
             self.edge_models_cache.clear()
 
@@ -850,9 +930,16 @@ class FogMessaging:
 
         threading.Thread(target=run, daemon=True).start()
 
-    # ------------ Agents helpers ---------------
-    def attach_agent(self, agent: Agent):
-        self.agent = agent
+    def _publish_fog_event(self, topic: str, payload: dict, qos: int = 1, retain: bool = False):
+        try:
+            cli = mqtt.Client(client_id=f"fog-events-{int(time.time()*1000)}", clean_session=True)
+            cli.connect(self.fog_mqtt_host, self.fog_mqtt_port)
+            cli.publish(topic, json.dumps(payload), qos=qos, retain=retain)
+            cli.disconnect()
+            logger.info("Fog (event): published to %s → %s", topic, payload)
+        except Exception as e:
+            logger.warning("Fog (event): failed to publish to %s: %s", topic, e)
+
 
 
 

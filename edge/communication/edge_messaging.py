@@ -9,7 +9,6 @@ import socket
 import pika
 import paho.mqtt.client as mqtt
 
-from shared.base_agent import Agent
 from shared.logging_config import logger
 from edge.communication.edge_service import EdgeService
 from shared.node_state import FederatedNodeState
@@ -31,8 +30,14 @@ class EdgeMessaging:
         self.fog_mqtt_port = fog_mqtt_port
         self.edge_service = edge_service
         self._last_cmd_id = None
-        self.agent: Agent = None
 
+        # reusable MQTT publisher (for telemetry)
+        self._pub_client = None
+        self._pub_lock = threading.Lock()
+
+    # ------------------------
+    # AMQP (Fog → Edge)
+    # ------------------------
     def _create_connection(self, retries=10, delay=5) -> pika.BlockingConnection:
         """Helper to create a new RabbitMQ connection with retry logic for fog node."""
         for attempt in range(1, retries + 1):
@@ -124,56 +129,73 @@ class EdgeMessaging:
 
         threading.Thread(target=run, daemon=True).start()
 
+    # ------------------------
+    # MQTT (Fog/Agent ↔ Edge)
+    # ------------------------
     def start_mqtt_listener(self, retries=10, delay=5) -> None:
         edge_name = FederatedNodeState.get_current_node().name
-        topic = f'fog/{edge_name}/command'
+        fog_topic = f'fog/{edge_name}/command'            # fog → edge control
+        agent_cmd_topic = f'agent/{edge_name}/commands'   # agent → edge nudges
 
         mqtt_client = mqtt.Client(client_id=f"edge-{edge_name}", clean_session=False)
         mqtt_client.reconnect_delay_set(min_delay=1, max_delay=30)
 
         def on_connect(client, userdata, flags, rc):
-            # flags may have 'session present' (paho v1) or 'session_present' (v2)
             sess = flags.get('session present', flags.get('session_present', 0))
             logger.info(f"Edge {edge_name}: MQTT connected rc={rc}, session_present={sess}")
             # Always (re)subscribe on connect so we recover after broker restarts
-            client.subscribe(topic, qos=1)
-            logger.info(f"Edge {edge_name}: (re)subscribed to {topic}")
+            client.subscribe([(fog_topic, 1), (agent_cmd_topic, 1)])
+            logger.info(f"Edge {edge_name}: (re)subscribed to {fog_topic} and {agent_cmd_topic}")
 
         def on_disconnect(client, userdata, rc):
             logger.warning(f"Edge {edge_name}: MQTT disconnected rc={rc}, will auto-reconnect...")
 
-        def on_mqtt_command(_client, _userdata, msg):
+        def _handle_fog_command(payload: dict):
+            cmd_id = payload.get("cmd_id")
+            if cmd_id is not None and cmd_id == self._last_cmd_id:
+                logger.info(f"Edge: duplicate cmd_id {cmd_id} from fog ignored.")
+                return
+            self._last_cmd_id = cmd_id
+
+            cmd = str(payload.get('command'))
+            logger.info(f"Edge {edge_name}: received FOG MQTT command: {cmd}")
+            if cmd == '0':
+                EdgeService.create_local_edge_model()
+            elif cmd == '1':
+                self.edge_service.train_edge_local_model(payload)
+            else:
+                logger.debug(f"Edge {edge_name}: ignoring MQTT command={cmd!r}")
+
+        def _handle_agent_command(payload: dict):
+            """
+            contract from federated-agents/common/contracts.NudgeCommand:
+              { "command": str, "reason": str, "mae": float, "params": {...} }
+            currently we react to: command == "REQUEST_RETRAIN"
+            """
+            try:
+                self.edge_service.handle_agent_nudge(payload)
+            except Exception:
+                logger.exception("Edge: failed handling agent nudge")
+
+        def on_message(_client, _userdata, msg):
             try:
                 payload = json.loads(msg.payload.decode())
-
-                if self.agent:
-                    try:
-                        self.agent.on_command(msg.topic, json.loads(msg.payload.decode()))
-                    except Exception as e:
-                        logger.warning(f"EdgeAgent hook error: {e}")
-
-                cmd_id = payload.get("cmd_id")
-                if cmd_id is not None and cmd_id == self._last_cmd_id:
-                    logger.info(f"Edge: duplicate cmd_id {cmd_id} from fog ignored.")
-                    return
-                self._last_cmd_id = cmd_id
-
-                cmd = str(payload.get('command'))
-                logger.info(f"Edge {edge_name}: received MQTT command: {cmd}")
-                if cmd == '0':
-                    EdgeService.create_local_edge_model()
-                elif cmd == '1':
-                    self.edge_service.train_edge_local_model(payload)
-                else:
-                    logger.debug(f"Edge {edge_name}: ignoring MQTT command={cmd!r}")
             except Exception as e:
-                logger.exception(f"Edge: error while handling MQTT command: {e}")
+                logger.warning("Edge MQTT: bad JSON on %s: %s", msg.topic, e)
+                return
+
+            if msg.topic == fog_topic:
+                _handle_fog_command(payload)
+            elif msg.topic == agent_cmd_topic:
+                _handle_agent_command(payload)
+            else:
+                logger.debug("Edge MQTT: ignoring topic %s", msg.topic)
 
         mqtt_client.on_connect = on_connect
         mqtt_client.on_disconnect = on_disconnect
-        mqtt_client.on_message = on_mqtt_command
+        mqtt_client.on_message = on_message
 
-        # Initial connect (sub happens in on_connect)
+        # Initial connect (subs happen in on_connect)
         for attempt in range(1, retries + 1):
             try:
                 mqtt_client.connect(self.fog_mqtt_host, self.fog_mqtt_port)
@@ -188,6 +210,40 @@ class EdgeMessaging:
 
         mqtt_client.loop_forever()
 
+    # ------------------------
+    # MQTT Telemetry Publisher (Edge → Agent)
+    # ------------------------
+    def _ensure_pub_client(self):
+        with self._pub_lock:
+            if self._pub_client is None:
+                c = mqtt.Client(client_id=f"edge-pub-{FederatedNodeState.get_current_node().name}",
+                                clean_session=True)
+                c.reconnect_delay_set(min_delay=1, max_delay=30)
+                c.connect(self.fog_mqtt_host, self.fog_mqtt_port)
+                threading.Thread(target=c.loop_forever, daemon=True).start()
+                self._pub_client = c
+
+    def publish_telemetry(self, ts: str, value: float, type_: str = "measure", meta: dict | None = None):
+        """
+        Publish edge telemetry so the edge-agent’s MQTT bridge can ingest it.
+        Topic: node/<EDGE_NAME>/telemetry
+        """
+        topic = f"node/{FederatedNodeState.get_current_node().name}/telemetry"
+        payload = {
+            "ts": ts,
+            "value": float(value),
+            "type": type_,
+            "meta": meta or {}
+        }
+        try:
+            self._ensure_pub_client()
+            self._pub_client.publish(topic, json.dumps(payload), qos=0, retain=False)
+        except Exception as e:
+            logger.warning("Edge: failed to publish telemetry to %s: %s", topic, e)
+
+    # ------------------------
+    # Uplink (Edge → Fog over AMQP)
+    # ------------------------
     def send_trained_model(self, model_path: str, metrics: dict) -> None:
         """Send a trained model and its metrics back to the fog."""
         # Read the model file and encode as base64
@@ -215,7 +271,3 @@ class EdgeMessaging:
         )
         connection.close()
         logger.info(f"Edge {FederatedNodeState.get_current_node().name}: sent trained model and metrics to fog.")
-
-    # ------- Agents helpers
-    def attach_agent(self, agent: Agent):
-        self.agent = agent

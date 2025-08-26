@@ -2,8 +2,8 @@ import os
 import tensorflow as tf
 import numpy as np
 from cloud.communication.cloud_resources_paths import CloudResourcesPaths
-from nodes.shared.logging_config import logger
-from nodes.shared.utils import delete_files_containing
+from shared.logging_config import logger
+from shared.utils import delete_files_containing
 
 
 def aggregate_received_models(fog_models_cache: dict):

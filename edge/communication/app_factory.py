@@ -8,18 +8,12 @@ from shared.node_state import FederatedNodeState
 from shared.shared_main import shared_router
 from edge.communication.edge_messaging import EdgeMessaging, EdgeService
 from shared.monitoring_thread import MonitoringThread
-from edge.agents.edge_agent import EdgeAgent
 
 app = FastAPI()
 
 edge_messaging = EdgeMessaging()
 edge_service = EdgeService(edge_messaging)
 edge_messaging.edge_service = edge_service
-
-
-edge_agent = EdgeAgent()
-edge_agent.attach_messaging(edge_messaging)
-edge_messaging.attach_agent(edge_agent)
 
 app.add_middleware(
     CORSMiddleware,
@@ -45,7 +39,6 @@ async def startup_event():
             logger.info("FederatedNodeState initialized! Stating AMQP/MQTT listeners...")
             threading.Thread(target=edge_messaging_arg.start_amqp_listener, daemon=True).start()
             threading.Thread(target=edge_messaging_arg.start_mqtt_listener, daemon=True).start()
-            edge_agent.start()
             already_started['done'] = True
             monitoring_thread.stop()
 

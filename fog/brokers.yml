@@ -14,6 +14,10 @@ services:
       RABBITMQ_DEFAULT_VHOST: /
     volumes:
       - rmq_fog_data:/var/lib/rabbitmq
+    extra_hosts:
+      - "cloud:192.168.2.220"
+      - "rabbitmq-cloud:192.168.2.220"
+      - "mqtt-cloud:192.168.2.220"
 
   mqtt:
     image: eclipse-mosquitto:2
@@ -27,6 +31,10 @@ services:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
+    extra_hosts:
+      - "cloud:${CLOUD_IP}"
+      - "rabbitmq-cloud:${CLOUD_IP}"
+      - "mqtt-cloud:${CLOUD_IP}"
 
 networks:
   aqtf_shared_network:
