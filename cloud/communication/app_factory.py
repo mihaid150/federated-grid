@@ -32,21 +32,20 @@ async def startup_event():
     logger.info("Initializing cloud application...")
     monitoring_thread = None
 
-    def start_listeners_when_node_is_ready(cloud_messaging_arg, already_started=None):
+    def start_listeners_when_node_is_ready(already_started=None):
         if already_started is None:
             already_started = {'done': False}
         node = FederatedNodeState.get_current_node()
         if not already_started['done'] and node is not None:
             logger.info("FederatedNodeState initialized! Stating AMQP/MQTT listeners...")
-            threading.Thread(target=cloud_messaging_arg.start_mqtt_listener, daemon=True).start()
-            threading.Thread(target=cloud_messaging_arg.start_amqp_listener, daemon=True).start()
+            cloud_main.coordinator.start_background_consumers()
+            logger.info("Cloud startup complete.")
             already_started['done'] = True
             monitoring_thread.stop()
 
     monitoring_thread = MonitoringThread(
         start_listeners_when_node_is_ready,
-        10,
-        cloud_main.cloud_messaging,
+        10
     )
     monitoring_thread.start()
 

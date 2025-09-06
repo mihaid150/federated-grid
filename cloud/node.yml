@@ -5,6 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    user: "1000:1000"
     environment:
       - RABBITMQ_HOST=${RABBITMQ_CONTAINER_NAME}
       - CLOUD_RABBITMQ_HOST=${CLOUD_RABBITMQ_HOST}
