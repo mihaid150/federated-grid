@@ -7,6 +7,7 @@ from cloud.communication.mqtt import MqttPublisher
 from cloud.communication.commands import Commands
 from cloud.communication.broadcast import Broadcaster
 from cloud.communication.ingest import Ingestor
+from cloud.communication.agent_listener import AgentCommandListener
 import threading
 
 class CloudCoordinator:
@@ -21,6 +22,7 @@ class CloudCoordinator:
         self.commands = Commands(self.pub, self.state)
         self.broadcaster = Broadcaster(self.cfg, self.state, self.pub)
         self.ingestor = Ingestor(self.cfg, self.state, self.pub)
+        self.agent_listener = AgentCommandListener(self.cfg, self.state, self.pub)
         self._run_boot_housekeeping()
 
     def _run_boot_housekeeping(self):
@@ -65,6 +67,7 @@ class CloudCoordinator:
 
     # --- background listeners ---
     def start_background_consumers(self):
-        # AMQP consumer (fog -> cloud models)
         threading.Thread(target=self.ingestor.start, daemon=True).start()
+        threading.Thread(target=self.agent_listener.start, daemon=True).start()
         logger.info("[Cloud]: AMQP ingestor thread started.")
+        logger.info("[Cloud]: agent-command listener thread started.")
