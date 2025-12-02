@@ -1,0 +1,20 @@
+.git
+.idea
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.DS_Store
+
+# runtime artifacts / bind mounts
+cloud/models/
+cloud/status/
+fog/models/
+edge/models/
+edge/data/filtered_data/
+
+# large artifacts
+**/*.keras
+**/*.h5
+**/*.pt
+**/*.onnx
+**/*.log

@@ -26,7 +26,13 @@ services:
     volumes:
       - ./models:/app/models
       - /sys:/host_sys:ro
+    extra_hosts:
+      - "fog:${FOG_IP}"
+      - "rabbitmq-fog:${FOG_IP}"
+      - "mqtt-fog:${FOG_IP}"
+
 
 networks:
-  aqtf_shared_network:
-    external: true
+  aqtf_shared_network: { } # {} used for remote nodes
+  # use only when all nodes on same host
+  # external: true

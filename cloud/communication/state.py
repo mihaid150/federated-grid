@@ -11,6 +11,7 @@ from shared.logging_config import logger
 class RoundState:
     def __init__(self):
         self.round_id: int | None = None
+<<<<<<< HEAD
         self.date: str | None = None
         self.expected_fogs: list[str] | None = None
         self.downlink_fogs: list[str] | None = None
@@ -24,6 +25,16 @@ class RoundState:
             self.round_id = int(round_id)
             if date is not None:
                 self.date = str(date)
+=======
+        os.makedirs(CloudResourcesPaths.STATUS_FOLDER_PATH.value, exist_ok=True)
+        self.restore()
+
+    def persist(self, round_id: int):
+        path = CloudResourcesPaths.ROUND_FILE_PATH.value
+        data = {"round_id": int(round_id), "ts": int(time.time())}
+        try:
+            self.round_id = int(round_id)
+>>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
             with NamedTemporaryFile("w", dir=os.path.dirname(path), delete=False) as temp_file:
                 json.dump(data, temp_file)
                 temp_file.flush()
@@ -40,6 +51,7 @@ class RoundState:
                 with open(path) as file:
                     data = json.load(file)
                 round_id = data.get("round_id")
+<<<<<<< HEAD
                 date = data.get("date")
                 if round_id is not None:
                     self.round_id = int(round_id)
@@ -59,3 +71,10 @@ class RoundState:
             self.downlink_fogs = list(fogs) if fogs else None
         except Exception:
             self.downlink_fogs = None
+=======
+                if round_id is not None:
+                    self.round_id = int(round_id)
+                    logger.info(f"[Cloud]: restoring round_id {round_id} from {path}")
+        except Exception as e:
+            logger.warning(f"[Cloud]: failed to restore round_id from {path}: {e}")
+>>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af

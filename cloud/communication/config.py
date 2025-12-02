@@ -14,6 +14,7 @@ class CloudConfig:
     purge_amqp_on_boot: bool = os.getenv("CLOUD_PURGE_AMQP_ON_BOOT", "false").lower() == "true"
     purge_mqtt_retained_on_boot: bool = os.getenv("CLOUD_PURGE_MQTT_RETAINED_ON_BOOT", "false").lower() == "true"
     clear_retained_topics: str = os.getenv("CLOUD_CLEAR_RETAINED_TOPICS", "cloud/fog/command")
+<<<<<<< HEAD
 
     # objective-based scheduling knobs (shared with cloud agent)
     cloud_selection_objective: str = os.getenv("CLOUD_SELECTION_OBJECTIVE", "r2").lower()
@@ -26,3 +27,5 @@ class CloudConfig:
         os.getenv("FED_DB_MANAGER_URL", "http://fdbm-app.cloud.svc.cluster.local:8080"),
     )
     fdbm_timeout: float = float(os.getenv("FDBM_TIMEOUT", "4.0"))
+=======
+>>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af

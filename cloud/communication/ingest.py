@@ -16,6 +16,7 @@ class Ingestor:
 
     def _ready_to_aggregate(self) -> bool:
         node = FederatedNodeState.get_current_node()
+<<<<<<< HEAD
         expected = getattr(self.state, "expected_fogs", None)
         logger.info(f"[Cloud]: expected fogs: {expected}")
         if expected:
@@ -27,6 +28,8 @@ class Ingestor:
                     got.add(name)
             return set(expected).issubset(got)
         # default wait for all child fogs
+=======
+>>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
         return bool(node) and len(self.fog_models_cache) == len(getattr(node, "child_nodes", []) or [])
 
     def start(self):
@@ -56,22 +59,34 @@ class Ingestor:
             mid = getattr(props, "message_id", None)
             if mid:
                 if mid in recent_ids:
+<<<<<<< HEAD
                     _ch.basic_ack(delivery_tag=method.delivery_tag)
                     return
+=======
+                    _ch.basic_ack(delivery_tag=method.delivery_tag); return
+>>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
                 recent_ids[mid] = now
 
             try:
                 payload = json.loads(body)
             except Exception:
                 logger.warning("[Cloud]: non-JSON AMQP payload; acking.")
+<<<<<<< HEAD
                 _ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
+=======
+                _ch.basic_ack(delivery_tag=method.delivery_tag); return
+>>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
 
             rid = payload.get("round_id")
             if self.state.round_id is None or rid != self.state.round_id:
                 logger.warning(f"[Cloud]: round mismatch (cloud={self.state.round_id}, got={rid}); acking.")
+<<<<<<< HEAD
                 _ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
+=======
+                _ch.basic_ack(delivery_tag=method.delivery_tag); return
+>>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
 
             fog_mac = payload.get("fog_device_mac")
             fog_name = payload.get("fog_name")
@@ -80,8 +95,12 @@ class Ingestor:
 
             if not (fog_mac and fog_name and model_b64):
                 logger.warning("[Cloud]: malformed fog message; acking.")
+<<<<<<< HEAD
                 _ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
+=======
+                _ch.basic_ack(delivery_tag=method.delivery_tag); return
+>>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
 
             key = f"{fog_mac}:{fog_name}"
             if not model_hash:
@@ -89,6 +108,7 @@ class Ingestor:
                     model_hash = hashlib.sha256(base64.b64decode(model_b64)).hexdigest()
                 except Exception:
                     logger.warning("[Cloud]: invalid base64 model; acking.")
+<<<<<<< HEAD
                     _ch.basic_ack(delivery_tag=method.delivery_tag)
                     return
 
@@ -96,6 +116,13 @@ class Ingestor:
             if prev and prev["hash"] == model_hash and (now - prev["ts"] < 900):
                 _ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
+=======
+                    _ch.basic_ack(delivery_tag=method.delivery_tag); return
+
+            prev = self._recent.get(key)
+            if prev and prev["hash"] == model_hash and (now - prev["ts"] < 900):
+                _ch.basic_ack(delivery_tag=method.delivery_tag); return
+>>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
 
             try:
                 model_bytes = base64.b64decode(model_b64)
@@ -103,6 +130,7 @@ class Ingestor:
                                           f"{fog_name}_aggregated_model.keras")
                 with open(model_path, "wb") as f:
                     f.write(model_bytes); f.flush(); os.fsync(f.fileno())
+<<<<<<< HEAD
 
                 entry = {"model_path": model_path, "fog_name": fog_name}
                 metrics = payload.get("metrics")
@@ -118,6 +146,13 @@ class Ingestor:
                 # self.pub.publish("cloud/events/fog-model-received",
                 #                  {"round_id": rid, "fog_name": fog_name, "hash": model_hash,
                 #                   "ts": int(time.time())}, qos=1, retain=False)
+=======
+                self.fog_models_cache[f"{fog_mac}_{fog_name}"] = {"model_path": model_path}
+                self._recent[key] = {"hash": model_hash, "ts": now}
+                self.pub.publish("cloud/events/fog-model-received",
+                                 {"round_id": rid, "fog_name": fog_name, "hash": model_hash,
+                                  "ts": int(time.time())}, qos=1, retain=False)
+>>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
                 logger.info(f"[Cloud]: cached aggregated model from fog {fog_name} at {model_path}.")
             except Exception as e:
                 logger.error(f"Cloud: failed to save model from fog {fog_name}: {e}")
@@ -126,11 +161,16 @@ class Ingestor:
 
 
             if self._ready_to_aggregate():
+<<<<<<< HEAD
                 logger.info("[Cloud]: all required fog models received; aggregating...")
+=======
+                logger.info("[Cloud]: all fog models received; aggregating...")
+>>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
                 aggregate_received_models(self.fog_models_cache)
                 self.fog_models_cache.clear()
                 logger.info("[Cloud]: cloud model aggregation complete.")
 
+<<<<<<< HEAD
                 # clear expected fogs for the next round
                 try:
                     self.state.set_expected_fogs(None)
@@ -144,6 +184,8 @@ class Ingestor:
                 except Exception as e:
                     logger.warning("Cloud: failed to publish cloud-model-broadcast: %s", e)
 
+=======
+>>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
         ch.basic_consume(queue="fog_to_cloud_models", on_message_callback=on_msg, auto_ack=False)
         logger.info("[Cloud]: listening for aggregated models from fogs...")
         ch.start_consuming()
