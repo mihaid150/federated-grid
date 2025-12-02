@@ -9,7 +9,7 @@ def filter_data_by_interval_date(file_path: str, filtering_column_name: str,
     chunk_size = 10000
     is_first_chunk = True
 
-    # NEW: start clean so every run overwrites previous results
+    # start clean so every run overwrites previous results
     try:
         if os.path.exists(output_file_path):
             os.remove(output_file_path)

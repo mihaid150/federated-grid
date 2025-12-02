@@ -43,9 +43,7 @@ class CloudMessaging:
 
         self._restore_round_id()
 
-    # ---------------------------
-    # NEW: status helpers
-    # ---------------------------
+    # status helpers
 
     def _persist_round_id(self, round_id: int):
         """Atomically persist current round id to disk."""
@@ -143,8 +141,8 @@ class CloudMessaging:
             return
 
         for fog in fogs:
-            q = f"cloud_fanout_for_{fog.name}"  # reuse existing fog queue name
-            # Durable queue (keep across broker restarts). Optionally make it quorum for more safety:
+            q = f"cloud_fanout_for_{fog.name}"  # reusing existing fog queue name
+            # Durable queue (keep across broker restarts).
             # arguments={"x-queue-type": "quorum"}
             channel.queue_declare(queue=q, durable=True, auto_delete=False)
             channel.basic_publish(
@@ -167,7 +165,7 @@ class CloudMessaging:
     def notify_all_edges_to_start_first_training(self, data: Dict[str, any]):
         round_id = data.get("round_id", int(time.time() * 1000))
         self.round_id = round_id
-        self._persist_round_id(round_id)  # <-- NEW
+        self._persist_round_id(round_id)
         cmd = {'command': '1', 'cmd_id': int(time.time() * 1000), 'round_id': round_id, 'data': data}
         self._mqtt_publish('cloud/fog/command', cmd, qos=1, retain=False)
 
@@ -342,7 +340,7 @@ class CloudMessaging:
             logger.info("Cloud has succeeded to aggregate fog models and obtained cloud model.")
 
     # ---------------------------
-    # Optional MQTT listener (unchanged)
+    # MQTT listener
     # ---------------------------
 
     def start_mqtt_listener(self):

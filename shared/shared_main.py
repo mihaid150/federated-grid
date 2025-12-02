@@ -256,7 +256,7 @@ def auto_initialization():
         name, node_type, port, (parent.get("label") if parent else None), len(children_objs)
     )
 
-    # Return JSON-serializable data (no Enums!)
+    # Return JSON-serializable data
     return {
         "message": "Auto-initialized node, parent, and children from topology.",
         "node": {

@@ -133,7 +133,7 @@ class EdgeMessaging:
             # flags may have 'session present' (paho v1) or 'session_present' (v2)
             sess = flags.get('session present', flags.get('session_present', 0))
             logger.info(f"Edge {edge_name}: MQTT connected rc={rc}, session_present={sess}")
-            # Always (re)subscribe on connect so we recover after broker restarts
+            # Always resubscribe on connect so we recover after broker restarts
             client.subscribe(topic, qos=1)
             logger.info(f"Edge {edge_name}: (re)subscribed to {topic}")
 

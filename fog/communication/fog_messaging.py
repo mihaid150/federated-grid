@@ -144,7 +144,7 @@ class FogMessaging:
         def on_cloud_connect(client, _userdata, _flags, rc):
             if rc == 0:
                 _mark_online(client, f"fogs/{fog_name}/status")
-                # (Re)subscribe after reconnects as well
+                # Resubscribe after reconnects as well
                 try:
                     client.subscribe("cloud/fog/command", qos=1)
                     logger.info("Fog: subscribed to cloud/fog/command on CLOUD broker.")
@@ -267,7 +267,7 @@ class FogMessaging:
                 try:
                     # When not connected and not connecting, poke connect_async again
                     if not cloud_client.is_connected():
-                        # Optional: try to resolve to give early visibility in logs
+                        # Resolve to give early visibility in logs
                         try:
                             socket.getaddrinfo(cloud_host, cloud_port, 0, socket.SOCK_STREAM)
                         except Exception as dns_e:
@@ -313,7 +313,7 @@ class FogMessaging:
             announced_down = False
             next_warn_at = 0.0
 
-            # Optional: use quorum queues for stronger durability
+            # Use quorum queues for stronger durability
             use_quorum = os.getenv("FOG_USE_QUORUM_QUEUES", "false").lower() == "true"
             queue_args = {"x-queue-type": "quorum"} if use_quorum else None
 
@@ -638,7 +638,7 @@ class FogMessaging:
             "model_file": blob_path,
             "hash": model_hash,
             "message_id": f"{fog_mac}:{fog_name}:{model_hash}",
-            "round_id": self.current_round,  # <<<< add this
+            "round_id": self.current_round,
             "ts": int(time.time()),  # for TTL pruning
         }
 
@@ -682,7 +682,7 @@ class FogMessaging:
                     ch.confirm_delivery()  # enable sync publisher confirms
                     ch.queue_declare(queue="fog_to_cloud_models", durable=True)
 
-                    # Optional: log unroutable returns if you keep mandatory=True
+                    # log unroutable returns if you keep mandatory=True
                     def _on_return(_ch, method, props, body):
                         logger.warning("Fog: broker returned message (reply_code=%s, reply_text=%s, rk=%s).",
                                        getattr(method, "reply_code", "?"),
