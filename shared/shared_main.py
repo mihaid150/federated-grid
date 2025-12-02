@@ -5,7 +5,7 @@ from fastapi import WebSocket, WebSocketDisconnect, APIRouter
 from shared.node import FederatedNode, FederatedNodeType, ParentFederatedNode, ChildFederatedNode, parse_topology_for_port
 from shared.node_state import FederatedNodeState
 from shared.logging_config import logger
-from shared.commands import Command
+from shared.commands_base import Command
 
 shared_router = APIRouter()
 
@@ -38,6 +38,10 @@ class AutoInitialization(Command):
     def execute(self, data: Dict[str, any]) -> Dict[str, Any]:
         return auto_initialization()
 
+class CleanStateState(Command):
+    def execute(self, data: Dict[str, any]) -> Dict[str, Any]:
+        return clean_state_state()
+
 command_map = {
     0: InitializeNodeCommand(),
     1: GetNodeInfo(),
@@ -45,6 +49,7 @@ command_map = {
     3: SetChildNode(),
     4: SetChildrenNodes(),
     5: AutoInitialization(),
+    6: CleanStateState(),
 }
 
 
@@ -267,6 +272,87 @@ def auto_initialization():
             "device_mac": mac
         }
     }
+
+def _clean_edge_state(node: FederatedNode) -> Dict[str, Any]:
+    """Clear retained fog/agent command topics for this edge."""
+    try:
+        from edge.communication.config import EdgeConfig
+        import paho.mqtt.client as mqtt
+    except Exception as e:
+        raise RuntimeError(f"Edge cleanup failed to import dependencies: {e}")
+
+    cfg = EdgeConfig()
+    fog_topic = f"fog/{node.name}/command"
+    agent_topic = f"agent/{node.name}/commands"
+    client = mqtt.Client(client_id=f"edge-clean-{node.name}", clean_session=True)
+    client.connect(cfg.fog_mqtt_host, cfg.fog_mqtt_port, keepalive=10)
+    client.publish(fog_topic, payload=b"", qos=1, retain=True)
+    client.publish(agent_topic, payload=b"", qos=1, retain=True)
+    client.disconnect()
+    return {
+        "broker": f"{cfg.fog_mqtt_host}:{cfg.fog_mqtt_port}",
+        "cleared_topics": [fog_topic, agent_topic],
+    }
+
+
+def _clean_fog_state(node: FederatedNode) -> Dict[str, Any]:
+    """Clear retained commands for all child edges and reset fog round cache."""
+    try:
+        from fog.communication.config import FogConfig
+        from fog.communication.fog_resources_paths import FogResourcesPaths
+        import paho.mqtt.client as mqtt
+    except Exception as e:
+        raise RuntimeError(f"Fog cleanup failed to import dependencies: {e}")
+
+    cfg = FogConfig()
+    topics = []
+    edges = getattr(node, "child_nodes", []) or []
+    for child in edges:
+        if child is None or not getattr(child, "name", None):
+            continue
+        topics.append(f"fog/{child.name}/command")
+        topics.append(f"agent/{child.name}/commands")
+
+    client = mqtt.Client(client_id=f"fog-clean-{node.name}", clean_session=True)
+    client.connect(cfg.fog_mqtt_host, cfg.fog_mqtt_port, keepalive=10)
+    for t in topics:
+        client.publish(t, payload=b"", qos=1, retain=True)
+    client.disconnect()
+
+    round_file_removed = False
+    round_file = FogResourcesPaths.ROUND_FILE_PATH.value
+    try:
+        if os.path.exists(round_file):
+            os.remove(round_file)
+            round_file_removed = True
+    except Exception as e:
+        logger.warning("Failed to remove fog round file %s: %s", round_file, e)
+
+    return {
+        "broker": f"{cfg.fog_mqtt_host}:{cfg.fog_mqtt_port}",
+        "cleared_topics": topics,
+        "round_file_removed": round_file_removed,
+    }
+
+
+def clean_state_state() -> Dict[str, Any]:
+    node = FederatedNodeState.get_current_node()
+    if node is None:
+        raise ValueError("Current node was not initialized yet!")
+
+    if node.federated_node_type.value == FederatedNodeType.EDGE_NODE:
+        details = _clean_edge_state(node)
+    elif node.federated_node_type.value == FederatedNodeType.FOG_NODE:
+        details = _clean_fog_state(node)
+    else:
+        details = {"message": f"{node.name} node: no state edge/fog control topics to clear"}
+
+    return {
+        "message": "State control state cleared.",
+        "node": node.name,
+        "details": details,
+    }
+
 
 
 
