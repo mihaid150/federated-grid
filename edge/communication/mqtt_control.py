@@ -1,25 +1,24 @@
+# edge/communication/mqtt_control.py
 import json, time
 import paho.mqtt.client as mqtt
 from shared.logging_config import logger
 from shared.node_state import FederatedNodeState
 from edge.communication.config import EdgeConfig
 from edge.communication.state import EdgeRuntimeState
-
+from shared.codec import coerce_legacy_into_command_record
+from edge.communication.edge_commands import EdgeEnvelope
 
 class MqttControl:
     def __init__(self, cfg: EdgeConfig, state: EdgeRuntimeState, edge_service):
         self.cfg, self.state, self.edge_service = cfg, state, edge_service
-
 
     def start(self):
         edge_name = FederatedNodeState.get_current_node().name
         fog_topic = f"fog/{edge_name}/command"
         agent_cmd_topic = f"agent/{edge_name}/commands"
 
-
         c = mqtt.Client(client_id=f"edge-{edge_name}", clean_session=self.cfg.mqtt_clean_session)
         c.reconnect_delay_set(min_delay=self.cfg.mqtt_min_delay, max_delay=self.cfg.mqtt_max_delay)
-
 
         def on_connect(client, userdata, flags, rc):
             sess = flags.get('session present', flags.get('session_present', 0))
@@ -27,19 +26,51 @@ class MqttControl:
             client.subscribe([(fog_topic, 1), (agent_cmd_topic, 1)])
             logger.info(f"[Edge] {edge_name}: (re)subscribed to {fog_topic} and {agent_cmd_topic}")
 
-
         def on_disconnect(client, userdata, rc):
             logger.warning(f"[Edge] {edge_name}: MQTT disconnected rc={rc}; auto-reconnect...")
 
-
         def _handle_fog_command(payload: dict):
+            # de-dup
             cmd_id = payload.get("cmd_id")
             if cmd_id is not None and cmd_id == self.state.last_cmd_id:
                 logger.info(f"[Edge]: duplicate cmd_id {cmd_id} ignored.")
                 return
-            self.state.last_cmd_id = cmd_id
+            if cmd_id is not None:
+                self.state.last_cmd_id = cmd_id
 
+            # 1) New envelope?
+            try:
 
+                if isinstance(payload.get("command"), dict) and "cmd" in payload["command"]:
+                    env = EdgeEnvelope.parse_obj(payload)
+                    cmd = env.command.cmd
+                    if cmd == "CREATE_LOCAL_MODEL":
+                        self.edge_service.create_local_edge_model()
+                        return
+                    if cmd == "START_FIRST_TRAINING":
+                        # EdgeService expects {"data": {...}} in payload
+                        self.edge_service.train_edge_local_model({"data": (env.payload or {})})
+                        return
+                    # Other commands not meant for edges -> ignore
+                    logger.debug(f"[Edge] {edge_name}: ignoring envelope cmd={cmd}")
+                    return
+                else:
+                    # Accept legacy coercion if cloud/fog sends old forms
+                    coerced = coerce_legacy_into_command_record(dict(payload))
+                    if isinstance(coerced.get("command"), dict) and "cmd" in coerced["command"]:
+                        env = EdgeEnvelope.parse_obj(coerced)
+                        cmd = env.command.cmd
+                        if cmd == "CREATE_LOCAL_MODEL":
+                            self.edge_service.create_local_edge_model()
+                            return
+                        if cmd == "START_FIRST_TRAINING":
+                            self.edge_service.train_edge_local_model({"data": (env.payload or {})})
+                            return
+            except Exception:
+                # Fall through to legacy numeric below
+                pass
+
+            # 2) Legacy numeric path
             cmd = str(payload.get('command'))
             logger.info(f"[Edge] {edge_name}: received FOG MQTT command: {cmd}")
             if cmd == '0':
@@ -49,13 +80,11 @@ class MqttControl:
             else:
                 logger.debug(f"[Edge] {edge_name}: ignoring MQTT command={cmd}")
 
-
         def _handle_agent_command(payload: dict):
             try:
                 self.edge_service.handle_agent_nudge(payload)
             except Exception:
                 logger.exception(f"[Edge]: failed handling agent nudge")
-
 
         def on_message(_client, _userdata, msg):
             if not msg.payload:
@@ -70,11 +99,9 @@ class MqttControl:
             elif msg.topic == agent_cmd_topic:
                 _handle_agent_command(payload)
 
-
         c.on_connect = on_connect
         c.on_disconnect = on_disconnect
         c.on_message = on_message
-
 
         # async loop
         c.connect_async(self.cfg.fog_mqtt_host, self.cfg.fog_mqtt_port)

@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from shared.node_state import FederatedNodeState
+from shared.resource_guard import get_resource_guard
 from shared.shared_main import shared_router
 from edge.communication.edge_service import EdgeService
 from shared.monitoring_thread import MonitoringThread
@@ -14,6 +15,9 @@ app = FastAPI()
 coord = EdgeCoordinator()
 edge_service = EdgeService(coord)
 coord.attach_service(edge_service)
+
+# Start resource guard daemon for this process (edge role)
+RESOURCE_GUARD = get_resource_guard(role="edge")
 
 app.add_middleware(
     CORSMiddleware,

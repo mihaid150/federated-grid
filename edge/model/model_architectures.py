@@ -9,12 +9,20 @@ available_architectural_models = [
 
 def create_model(model_label: str):
     if model_label == 'simple_lstm_two_gates':
-        return simple_lstm_model()
+        # Build with variable time dimension so different sequence_length values are accepted at train time.
+        return simple_lstm_model(sequence_length=None)
 
 
-def simple_lstm_model(sequence_length: int = 144, mask_value: int = -1):
+def simple_lstm_model(sequence_length: int | None = None, mask_value: int = -1):
+    """Create a simple LSTM model.
+
+    If sequence_length is None, the time dimension is variable (None), allowing
+    training/inference with different sequence lengths (e.g., 96/144/192) as long
+    as the feature dimension matches.
+    """
     num_features = len(required_columns) - 1
-    inputs = tf.keras.layers.Input(shape=(sequence_length, num_features), dtype=tf.float32)
+    time_steps = sequence_length if sequence_length is not None else None
+    inputs = tf.keras.layers.Input(shape=(time_steps, num_features), dtype=tf.float32)
 
     x = tf.keras.layers.Conv1D(filters=32, kernel_size=3, activation='relu', padding='same')(inputs)
     x = tf.keras.layers.BatchNormalization()(x)
@@ -33,5 +41,5 @@ def simple_lstm_model(sequence_length: int = 144, mask_value: int = -1):
     optimizer = tf.keras.optimizers.Adam()
     model.compile(optimizer=optimizer, loss='mse', metrics=["mae", "mse"])
 
-    logger.info(f"Created model with input shape ({sequence_length}, {num_features})")
+    logger.info(f"Created model with input shape ({time_steps}, {num_features})")
     return model
