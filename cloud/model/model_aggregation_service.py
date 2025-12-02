@@ -3,6 +3,7 @@ import tensorflow as tf
 import numpy as np
 from cloud.communication.cloud_resources_paths import CloudResourcesPaths
 from shared.logging_config import logger
+from shared.resource_guard import get_resource_guard
 from shared.utils import delete_files_containing
 
 
@@ -15,6 +16,9 @@ def aggregate_received_models(fog_models_cache: dict):
 
     :return: the aggregated Keras model, or None if no models are available.
     """
+
+    guard = get_resource_guard(role="cloud")
+    guard.wait_for_capacity("cloud-aggregation-start")
 
     aggregated_weights = None
     model_count = 0
@@ -29,6 +33,7 @@ def aggregate_received_models(fog_models_cache: dict):
     # Include each fog model
     for map_id, entry in fog_models_cache.items():
         model_path = entry["model_path"]
+        guard.wait_for_capacity("cloud-aggregation-load")
         model = tf.keras.models.load_model(model_path)
         weights = model.get_weights()
         if aggregated_weights is None:
@@ -52,10 +57,12 @@ def aggregate_received_models(fog_models_cache: dict):
         first_fog_model_path = next(iter(fog_models_cache.values()))["model_path"]
         cloud_model = tf.keras.models.load_model(first_fog_model_path)
 
+    guard.wait_for_capacity("cloud-aggregation-combine")
     cloud_model.set_weights(aggregated_weights)
 
     # Ensure the destination directory exists
     os.makedirs(os.path.dirname(CloudResourcesPaths.CLOUD_MODEL_FILE_PATH.value), exist_ok=True)
+    guard.wait_for_capacity("cloud-aggregation-save")
     cloud_model.save(CloudResourcesPaths.CLOUD_MODEL_FILE_PATH.value)
     logger.info("Cloud: aggregated model saved to %s", CloudResourcesPaths.CLOUD_MODEL_FILE_PATH.value)
 
