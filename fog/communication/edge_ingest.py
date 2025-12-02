@@ -5,11 +5,13 @@ from shared.node_state import FederatedNodeState
 from fog.communication.config import FogConfig
 from fog.communication.state import FogRoundState
 from fog.communication.fog_resources_paths import FogResourcesPaths
+from shared.resource_guard import get_resource_guard
 
 class EdgeModelIngestor:
     def __init__(self, cfg: FogConfig, state: FogRoundState, event_bus):
         self.cfg, self.state, self.event_bus = cfg, state, event_bus
         self.edge_models_cache: dict[str, dict] = {}
+        self._resource_guard = get_resource_guard(role="fog")
 
     def start(self, on_all_ready):
         cfg, st = self.cfg, self.state
@@ -37,6 +39,7 @@ class EdgeModelIngestor:
                     try:
                         payload = json.loads(body)
                         edge_mac = payload['edge_mac']; edge_name = payload['edge_name']
+                        self._resource_guard.wait_for_capacity("fog-edge-ingest")
                         model_bytes = base64.b64decode(payload['model'])
                         model_path = os.path.join(FogResourcesPaths.MODELS_FOLDER_PATH.value, f"{edge_name}_trained_model.keras")
                         os.makedirs(os.path.dirname(model_path), exist_ok=True)

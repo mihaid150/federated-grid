@@ -11,7 +11,7 @@ class UplinkWorker:
     def __init__(self, cfg: FogConfig, state: FogRoundState):
         self.cfg, self.state = cfg, state
 
-    def enqueue_snapshot(self, model_path: str, model_bytes: bytes | None = None) -> None:
+    def enqueue_snapshot(self, model_path: str, model_bytes: bytes | None = None, metrics: dict | None = None) -> None:
         outbox_dir = FogResourcesPaths.OUTBOX_FOLDER_PATH.value
         os.makedirs(outbox_dir, exist_ok=True)
         if model_bytes is None:
@@ -40,6 +40,11 @@ class UplinkWorker:
             "round_id": st.round_id,
             "ts": int(time.time()),
         }
+
+        if metrics:
+            # Store lightweight aggregated metrics for reward computation at cloud
+            meta["metrics"] = metrics
+
         tmp_meta = meta_path + ".tmp"
         with open(tmp_meta, "w") as jf:
             json.dump(meta, jf); jf.flush(); os.fsync(jf.fileno())
@@ -106,6 +111,7 @@ class UplinkWorker:
                         "model": base64.b64encode(model_bytes).decode("utf-8"),
                         "hash": model_hash,
                         "round_id": st.round_id,
+                        "metrics": meta.get("metrics"),
                     }).encode("utf-8")
 
                     props = pika.BasicProperties(delivery_mode=2, content_type="application/json", message_id=msg_id)

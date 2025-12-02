@@ -6,6 +6,8 @@ from shared.node_state import FederatedNodeState
 from fog.communication.config import FogConfig
 from fog.communication.state import FogRoundState
 from fog.communication.fog_resources_paths import FogResourcesPaths
+from shared.codec import loads, coerce_legacy_into_command_record
+from fog.communication.fog_commands import FogNodeEnvelope
 
 class CloudToEdgesBridge:
     def __init__(self, cfg: FogConfig, state: FogRoundState, event_bus):
@@ -50,32 +52,37 @@ class CloudToEdgesBridge:
 
                 def on_model(_ch, method, _props, body):
                     try:
-                        msg = json.loads(body.decode("utf-8"))
+                        raw = loads(body)
+                        raw = coerce_legacy_into_command_record(raw)
+                        env = FogNodeEnvelope.parse_obj(raw)
                     except Exception as e:
                         logger.warning(f"[Fog]: invalid cloud AMQP payload: {e}")
-                        _ch.basic_ack(delivery_tag=method.delivery_tag); return
+                        _ch.basic_ack(delivery_tag=method.delivery_tag)
+                        return
 
-                    if msg.get("command") == "2" or "model" in msg:
+                    # enable outbox on dispatch of cloud model
+                    if env.command.cmd == "CLOUD_MODEL_DISPATCH":
                         if not st.outbox_enabled:
-                            logger.info(f"[Fog]: enabling outbox worker (cloud model broadcast).")
+                            logger.info("[Fog]: enabling outbox worker (cloud model dispatch).")
                         st.enable_outbox(True)
+                    model_b64 = (env.payload or {}).get("model")
 
-                    if msg.get("model"):
+                    if model_b64:
                         try:
                             os.makedirs(os.path.dirname(FogResourcesPaths.FOG_MODEL_FILE_PATH.value), exist_ok=True)
                             with open(FogResourcesPaths.FOG_MODEL_FILE_PATH.value, "wb") as f:
                                 import base64
-                                f.write(base64.b64decode(msg["model"]))
+                                f.write(base64.b64decode(model_b64))
                                 f.flush(); os.fsync(f.fileno())
-                            logger.info(f"[Fog]: (AMQP) updated fog model from cloud broadcast.")
+                            logger.info(f"[Fog]: (AMQP) updated fog model from cloud dispatch.")
                             self.event_bus.publish(
                                 topic="fog/events/cloud-model-downlink",
-                                payload={"round_id": msg.get("round_id"), "ts": int(time.time())}
+                                payload={"round_id": env.round_id, "ts": int(time.time())}
                             )
                         except Exception as e:
                             logger.exception(f"[Fog]: failed writing fog model: {e}")
 
-                    rid = msg.get("round_id")
+                    rid = env.round_id
                     if rid is not None and rid != st.round_id:
                         logger.info(f"[Fog]: new round_id={rid} (was {st.round_id}) → outbox will be pruned by worker.")
                         st.persist(rid)
@@ -89,7 +96,8 @@ class CloudToEdgesBridge:
                                 edge_q = f"edge_{edge.name}_messages_queue"
                                 lch.queue_declare(queue=edge_q, durable=True, auto_delete=False)
                                 lch.basic_publish(exchange='', routing_key=edge_q,
-                                                  body=json.dumps(msg).encode('utf-8'),
+                                                  body = json.dumps(
+                                                      env.to_dict()).encode('utf-8'),
                                                   properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"))
                         logger.info(f"[Fog]: (AMQP) forwarded cloud message to local edges.")
                     except Exception as e:

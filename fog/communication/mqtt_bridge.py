@@ -4,6 +4,9 @@ from shared.logging_config import logger
 from shared.node_state import FederatedNodeState
 from fog.communication.config import FogConfig
 from fog.communication.state import FogRoundState
+from shared.codec import loads, coerce_legacy_into_command_record
+from fog.communication.fog_commands import FogNodeEnvelope
+
 
 class MqttBridge:
     def __init__(self, cfg: FogConfig, state: FogRoundState, event_bus):
@@ -114,14 +117,17 @@ class MqttBridge:
                 logger.info(f"[Fog]: ignoring empty MQTT payload on {msg.topic}")
                 return
             try:
-                payload = json.loads(msg.payload.decode())
+                raw = loads(msg.payload)
+                raw = coerce_legacy_into_command_record(raw)  # tolerate legacy "command":"1"
+                env = FogNodeEnvelope.parse_obj(raw)
+                payload = env.to_dict()  # for logging below
             except Exception as e:
                 logger.warning(f"[Fog]: bad MQTT payload from cloud: {e}")
                 return
 
-            command = payload.get("command")
-            rid = payload.get("round_id")
-            cmd_id = payload.get("cmd_id")
+            cmd = env.command.cmd
+            rid = env.round_id
+            cmd_id = payload.get("cmd_id")  # legacy id if present; not required
 
             if _dedup_cmd(cmd_id):
                 logger.info(f"[Fog]: ignoring duplicated command {cmd_id} on {msg.topic}")
@@ -132,26 +138,40 @@ class MqttBridge:
                 logger.info(f"[Fog]: new round_id={rid} (was {st.round_id}) on {msg.topic} → persist & purge outbox.")
                 st.persist(rid)
 
-            # === KEEP ONLY LEGACY NUMERIC COMMANDS FROM CLOUD ===
-            if command in ('1', '2'):
+            # === New standard commands from cloud → edges (translated to legacy for now) ===
+            if cmd in ("CREATE_LOCAL_MODEL", "START_FIRST_TRAINING"):
+                # Enable outbox on create/start (legacy behavior)
                 if not st.outbox_enabled:
-                    logger.info(f"[Fog]: enabling outbox worker (cloud command={command}).")
-                    st.enable_outbox(True)
+                    logger.info(f"[Fog]: enabling outbox worker (cloud cmd={cmd}).")
+                st.enable_outbox(True)
 
-                # Relay to edges; retain for '1'/'2'
+                # Translate to legacy numeric for edges (until edges are upgraded)
+                legacy_map = {
+                    "CREATE_LOCAL_MODEL": "0",
+                    "START_FIRST_TRAINING": "1",
+                }
+                legacy = {
+                    "command": legacy_map[cmd],
+                    "cmd_id": cmd_id or int(time.time() * 1000),
+                    "round_id": rid,
+                    "data": (env.payload or {}),
+                    "origin": env.origin,
+                    "ts": env.ts,
+                }
                 edges = getattr(FederatedNodeState.get_current_node(), "child_nodes", []) or []
+
                 for edge in edges:
                     topic = f"fog/{edge.name}/command"
                     try:
-                        fog_client.publish(topic, json.dumps(payload), qos=1, retain=True)
-                        logger.info(f"[Fog]: (cloud→edges) cmd {cmd_id} → {topic}")
+                        fog_client.publish(topic, json.dumps(legacy), qos=1, retain=True)
+                        logger.info(f"[Fog]: (cloud→edges) {cmd} → {topic}")
                         self._schedule_clear(fog_client, topic)  # schedule retained clear
                     except Exception as e:
                         logger.warning(f"[Fog]: failed to publish to {topic}: {e}")
-                return
 
-            # Everything else (policy/actions) now flows via fog-agent locally
-            logger.info(f"[Fog]: ignoring cloud policy command '{command}' (handled by fog-agent locally).")
+                return
+            # Everything else (policy/actions) continues to be handled by fog-agent locally
+            logger.info(f"[Fog]: ignoring cloud policy cmd '{cmd}' on fog node (handled by fog-agent).")
 
         cloud_client.on_connect = on_cloud_connect
         cloud_client.on_disconnect = on_cloud_disconnect
@@ -184,69 +204,48 @@ class MqttBridge:
             cmd = str(payload.get("cmd", "")).upper()
             edges = getattr(FederatedNodeState.get_current_node(), "child_nodes", []) or []
 
-            # THROTTLE (a.k.a. GLOBAL_THROTTLE from cloud-agent → mapped by fog-agent)
-            if cmd in ("THROTTLE", "GLOBAL_THROTTLE"):
-                for edge in edges:
-                    topic = f"fog/{edge.name}/command"
-                    try:
-                        fog_client.publish(topic, json.dumps(payload), qos=1, retain=False)
-                        logger.info(f"[Fog]: (agent→edge) THROTTLE → {topic}")
-                    except Exception as e:
-                        logger.warning(f"[Fog]: THROTTLE publish failed to {topic}: {e}")
-                return
-
-            # RETRAIN_FOG → turn into REQUEST_RETRAIN for all edges
-            if cmd == "RETRAIN_FOG":
-                retrain = {
-                    "command": "REQUEST_RETRAIN",
-                    "reason": payload.get("reason", "policy"),
-                    "params": payload.get("params", {"window_days": 2}),
-                    "ts": int(time.time()),
-                }
-                for edge in edges:
-                    topic = f"fog/{edge.name}/command"
-                    try:
-                        fog_client.publish(topic, json.dumps(retrain), qos=1, retain=False)
-                        logger.info(f"[Fog]: (agent→edge) RETRAIN → {topic}")
-                    except Exception as e:
-                        logger.warning(f"[Fog]: RETRAIN publish failed to {topic}: {e}")
-                return
-
-            # SUGGEST_MODEL → targeted OR broadcast (if no 'target')
-            if cmd == "SUGGEST_MODEL":
-                target = payload.get("target")
-                if target:
-                    topic = f"fog/{target}/command"
-                    try:
-                        fog_client.publish(topic, json.dumps(payload), qos=1, retain=False)
-                        logger.info(f"[Fog]: (agent→edge) SUGGEST_MODEL → {topic}")
-                    except Exception as e:
-                        logger.warning(f"[Fog]: SUGGEST_MODEL publish failed to {topic}: {e}")
-                else:
-                    for edge in edges:
-                        topic = f"fog/{edge.name}/command"
-                        try:
-                            fog_client.publish(topic, json.dumps(payload), qos=1, retain=False)
-                            logger.info(f"[Fog]: (agent→edges) SUGGEST_MODEL → {topic}")
-                        except Exception as e:
-                            logger.warning(f"[Fog]: SUGGEST_MODEL publish failed to {topic}: {e}")
-                return
-
-            # SELECT_FOG (fog-scope toggle/activation; no edge fanout by default)
-            if cmd == "SELECT_FOG":
-                target = payload.get("target")
-                # Only act if this fog is the target (or no target provided).
-                if target and target != fog_name:
-                    logger.info(f"[Fog]: SELECT_FOG target={target} != this fog={fog_name}; ignoring.")
-                    return
+            # PLAN_ROUND → persist round params and turn into REQUEST_RETRAIN for all edges
+            if cmd == "PLAN_ROUND":
+                # persist round id if provided; enable outbox
                 try:
-                    setattr(st, "selected", True)  # best-effort flag
+                    rid = payload.get("round_id")
+                    if rid is not None and rid != st.round_id:
+                        st.persist(int(rid))
+                    if not st.outbox_enabled:
+                        st.enable_outbox(True)
+                        logger.info("[Fog]: enabling outbox worker (PLAN_ROUND).")
+                except Exception as e:
+                    logger.warning(f"[Fog]: failed to persist round state on PLAN_ROUND: {e}")
+
+                # stash params for aggregator
+                try:
+                    st.set_round_params(payload.get("params") or {})
                 except Exception:
                     pass
-                if not st.outbox_enabled:
-                    st.enable_outbox(True)
-                    logger.info("[Fog]: enabling outbox due to SELECT_FOG (local).")
-                logger.info(f"[Fog]: this fog '{fog_name}' selected by fog-agent; no edge fanout.")
+
+                plan = {
+                    "cmd": "PLAN_ROUND",
+                    "reason": payload.get("reason", "policy"),
+                    "params": payload.get("params", {}),
+                    "round_id": payload.get("round_id"),
+                    "ts": int(time.time()),
+                }
+                # Optional targeting: restrict to explicit targets if present
+                try:
+                    targets = payload.get("targets") or (plan["params"].get("selected_edges") if isinstance(plan.get("params"), dict) else None)
+                    target_set = {str(t) for t in targets} if isinstance(targets, list) else None
+                except Exception:
+                    target_set = None
+
+                for edge in edges:
+                    if target_set and edge.name not in target_set:
+                        continue
+                    topic = f"agent/{edge.name}/planning"
+                    try:
+                        fog_client.publish(topic, json.dumps(plan), qos=1, retain=False)
+                        logger.info(f"[Fog]: (agent→edge-agent) PLAN_ROUND → {topic}")
+                    except Exception as e:
+                        logger.warning(f"[Fog]: failed (agent→edge-agent) PLAN_ROUND → {topic}: {e}")
                 return
 
             logger.warning(f"[Fog]: unrecognized LOCAL cmd='{cmd}' payload={payload}")

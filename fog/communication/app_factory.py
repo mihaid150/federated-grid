@@ -8,6 +8,8 @@ import threading
 from shared.monitoring_thread import MonitoringThread
 from shared.node_state import FederatedNodeState
 from shared.shared_main import shared_router
+from shared.resource_guard import get_resource_guard
+
 app = FastAPI()
 fog_coordinator = FogCoordinator()
 
@@ -21,6 +23,8 @@ app.add_middleware(
 
 app.include_router(shared_router, prefix="/node")
 
+# Start resource guard daemon for this process (fog role)
+RESOURCE_GUARD = get_resource_guard(role="fog")
 
 @app.on_event("startup")
 async def startup_event():
