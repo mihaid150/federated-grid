@@ -11,7 +11,6 @@ class AgentCommandListener:
         in_topic  = getattr(self.cfg, "topic_agent_commands", "cloud/agent/commands")
         out_topic = "cloud/fog/command"
 
-<<<<<<< HEAD
         # Keep backwards compatibility but allow generic pass-through for any new commands
         AGENT_CMDS = {"PLAN_ROUND"}
 
@@ -19,8 +18,6 @@ class AgentCommandListener:
             # targeted agent-plane topic; use 'all' for broadcast
             return f"cloud/agent/fog/{(target or 'all')}/commands"
 
-=======
->>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
         def on_connect(client, userdata, flags, rc):
             if rc == 0:
                 logger.info(
@@ -52,7 +49,6 @@ class AgentCommandListener:
             cmd = str(data.get("cmd", "")).upper()
             logger.info("[Cloud]: agent-listener received cmd=%s payload=%s", cmd, data)
 
-<<<<<<< HEAD
             # update expected fogs and publish accordingly for PLAN_ROUND
             if cmd == "PLAN_ROUND":
                 # control-only path: only set expectation, do not fan-out
@@ -125,31 +121,6 @@ class AgentCommandListener:
                 data["ts"] = int(time.time())
             self.pub.publish(topic_out, data, qos=1, retain=False)
             logger.info("[Cloud]: agent→fog-agent publish %s -> %s", topic_out, data)
-=======
-            if cmd == "GLOBAL_THROTTLE":
-                try:
-                    rate = float(data.get("rate", 0))
-                except Exception:
-                    logger.warning("[Cloud]: GLOBAL_THROTTLE missing/invalid 'rate' in %s", data)
-                    return
-                self.state.global_throttle = rate
-                out = {"command": "GLOBAL_THROTTLE", "rate": rate, "cmd_id": int(time.time() * 1000)}
-                self.pub.publish(out_topic, out, qos=1, retain=False)
-                logger.info("[Cloud]: agent→fog publish %s -> %s", out_topic, out)
-
-            elif cmd == "SELECT_FOG":
-                target = data.get("target")
-                if not target:
-                    logger.warning("[Cloud]: SELECT_FOG missing 'target' in %s", data)
-                    return
-                self.state.selected_fog = target
-                out = {"command": "SELECT_FOG", "target": target, "cmd_id": int(time.time() * 1000)}
-                self.pub.publish(out_topic, out, qos=1, retain=False)
-                logger.info("[Cloud]: agent→fog publish %s -> %s", out_topic, out)
-
-            else:
-                logger.warning("[Cloud]: agent-listener unknown cmd=%r payload=%s", cmd, data)
->>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
 
         client = mqtt.Client()  # keep default clean session; re-subscribes on reconnect below
         client.on_connect = on_connect

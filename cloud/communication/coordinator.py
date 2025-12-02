@@ -4,13 +4,8 @@ from shared.logging_config import logger
 from cloud.communication.config import CloudConfig
 from cloud.communication.state import RoundState
 from cloud.communication.mqtt import MqttPublisher
-<<<<<<< HEAD
 from cloud.communication.cloud_gateway import CloudGateway
 from cloud.communication.downlink_dispatcher import DownlinkDispatcher
-=======
-from cloud.communication.commands import Commands
-from cloud.communication.broadcast import Broadcaster
->>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
 from cloud.communication.ingest import Ingestor
 from cloud.communication.agent_listener import AgentCommandListener
 import threading
@@ -24,13 +19,8 @@ class CloudCoordinator:
         self.cfg = cfg or CloudConfig()
         self.state = RoundState()
         self.pub = MqttPublisher(self.cfg.cloud_mqtt_host, self.cfg.cloud_mqtt_port)
-<<<<<<< HEAD
         self.commands = CloudGateway(self.pub, self.state)
         self.downlink_dispatcher = DownlinkDispatcher(self.cfg, self.state, self.pub)
-=======
-        self.commands = Commands(self.pub, self.state)
-        self.broadcaster = Broadcaster(self.cfg, self.state, self.pub)
->>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
         self.ingestor = Ingestor(self.cfg, self.state, self.pub)
         self.agent_listener = AgentCommandListener(self.cfg, self.state, self.pub)
         self._run_boot_housekeeping()
@@ -70,7 +60,6 @@ class CloudCoordinator:
         self.commands.notify_create_local_model()
 
     def notify_all_edges_to_start_first_training(self, data: dict):
-<<<<<<< HEAD
         # Honor a selected fog if set by the agent listener (bandit/orchestrator)
         target = getattr(self.state, "selected_fog", None)
         # normalize target: treat empty or 'all' as broadcast
@@ -82,12 +71,6 @@ class CloudCoordinator:
 
     def dispatch_cloud_model(self, data: dict):
         self.downlink_dispatcher.downlink_dispatch_model(data)
-=======
-        self.commands.notify_start_first_training(data)
-
-    def broadcast_cloud_model(self, data: dict):
-        self.broadcaster.broadcast_model(data)
->>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
 
     # --- background listeners ---
     def start_background_consumers(self):

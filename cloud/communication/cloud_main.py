@@ -4,10 +4,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from shared.commands_base import Command
 from shared.logging_config import logger
 from cloud.communication.coordinator import CloudCoordinator
-<<<<<<< HEAD
 from cloud.communication.scheduler import CloudRoundScheduler
-=======
->>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
 
 cloud_router = APIRouter()
 
@@ -33,7 +30,6 @@ class DispatchCloudModel(Command):
         self.cloud_main = cloud_main
 
     def execute(self, data: Dict[str, Any]) -> Dict[str, Any]:
-<<<<<<< HEAD
         return self.cloud_main.dispatch_cloud_model(data)
 
 
@@ -43,20 +39,14 @@ class RunSchedule(Command):
 
     def execute(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.cloud_main.start_schedule(data)
-=======
-        return self.cloud_main.broadcast_cloud_model(data)
->>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
 
 
 class CloudMain:
     def __init__(self):
         # use the new façade
         self.coordinator = CloudCoordinator()
-<<<<<<< HEAD
         # scheduler for automated rounds
         self._scheduler = CloudRoundScheduler(self.coordinator.cfg, self.coordinator.commands, self.coordinator.state)
-=======
->>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
 
         self.command_map = {
             0: NotifyModelCreation(self),
@@ -77,7 +67,6 @@ class CloudMain:
         self.coordinator.notify_all_edges_to_start_first_training(data)
         return {"message": "Cloud (MQTT): sent command to fogs instructing edges to start the first training."}
 
-<<<<<<< HEAD
     def dispatch_cloud_model(self, data: Dict[str, Any]) -> Dict[str, Any]:
         self.coordinator.dispatch_cloud_model(data)
         return {"message": "Cloud (AMQP): dispatch cloud model to fogs."}
@@ -103,12 +92,6 @@ class CloudMain:
             logger.exception("Cloud: failed to start schedule: %s", e)
             return {"Error": str(e)}
 
-=======
-    def broadcast_cloud_model(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        self.coordinator.broadcast_cloud_model(data)
-        return {"message": "Cloud (AMQP): broadcast cloud model to fogs."}
-
->>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
     # ----- WS handler remains the same -----
     async def websocket_handler(self, websocket: WebSocket):
         await websocket.accept()

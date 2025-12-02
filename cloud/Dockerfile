@@ -16,13 +16,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Python deps (note path from repo root)
 COPY cloud/requirements.txt /app/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
-<<<<<<< HEAD
     pip install --no-cache-dir --trusted-host ${PIP_TRUSTED_HOST} -r /app/requirements.txt
 
 ARG CACHE_BUST=1
-=======
-    pip install -r /app/requirements.txt
->>>>>>> d713743c2c6a65a787e35b4fec23833e426ee6af
 
 # App code (from repo root context)
 COPY cloud /app/cloud
